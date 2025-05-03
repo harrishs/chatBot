@@ -1,0 +1,19 @@
+# Ignore Python virtual environments
+**/venv/
+
+# Ignore environment variables
+.env
+
+# Byte-compiled / cache files
+**/__pycache__/
+**/*.py[cod]
+
+# Ignore Docker-related
+**/postgres_data/
+*.log
+
+# Ignore node_modules from frontend
+frontend/node_modules/
+
+# macOS system files
+.DS_Store
