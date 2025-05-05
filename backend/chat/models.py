@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import AbstractUser
 
 class Company(models.Model):
     name = models.CharField(max_length=255)
@@ -8,6 +9,14 @@ class Company(models.Model):
     def __str__(self):
         return self.name
     
+
+class User(AbstractUser):
+    company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='users', null=True)
+
+    def __str__(self):
+        company_name = self.company.name if self.company else "No Company"
+        return f"{self.email} ({company_name})"
+
 
 class ChatBotInstance(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='chatBots')
