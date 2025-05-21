@@ -1,5 +1,5 @@
 import { useState } from "react";
-import api from "../api";
+import api from "../api/axios";
 
 function Login({ onLogin }) {
 	const [username, setUsername] = useState("");
