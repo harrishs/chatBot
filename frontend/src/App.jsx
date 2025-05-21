@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import Login from "./pages/Login";
 import api from "./api/axios";
+import { useNavigate } from "react-router-dom";
 
 function App() {
 	const [users, setUsers] = useState([]);
-	const [loggedIn, setLoggedIn] = useState(!!localStorage.getItem("authToken"));
+	const navigate = useNavigate();
 
 	const fetchUsers = async () => {
 		try {
@@ -16,17 +17,13 @@ function App() {
 	};
 
 	useEffect(() => {
-		if (loggedIn) {
-			fetchUsers();
-		}
-	}, [loggedIn]);
+		fetchUsers();
+	}, []);
 
 	const handleLogout = () => {
 		localStorage.removeItem("authToken");
-		setLoggedIn(false);
+		navigate("/login");
 	};
-
-	if (!loggedIn) return <Login onLogin={() => setLoggedIn(true)} />;
 
 	return (
 		<div style={{ padding: "2rem" }}>
