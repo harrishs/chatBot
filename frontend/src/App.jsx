@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import Login from "./pages/Login";
 import api from "./api/axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 
 function App() {
 	const [users, setUsers] = useState([]);
@@ -28,6 +27,7 @@ function App() {
 	return (
 		<div style={{ padding: "2rem" }}>
 			<h2>Users in Your Company</h2>
+			<Link to="/chatbots"> Manage ChatBots</Link>
 			<button onClick={handleLogout}>Logout</button>
 			<ul>
 				{users.map((u) => (
