@@ -8,6 +8,7 @@ function Login({ onLogin }) {
 
 	const handleSubmit = async (e) => {
 		try {
+			e.preventDefault();
 			const res = await api.post("/login/", { username, password });
 			localStorage.setItem("authToken", res.data.token);
 			onLogin();
