@@ -12,6 +12,10 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 from decouple import config
+from cryptography.fernet import Fernet
+
+ENCRYPTION_KEY = config('ENCRYPTION_KEY')
+fernet = Fernet(ENCRYPTION_KEY)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent

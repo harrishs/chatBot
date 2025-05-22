@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback
+from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -23,6 +23,28 @@ class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
         fields = '__all__'
+
+class CredentialSerializer(serializers.ModelSerializer):
+    api_key = serializers.CharField(write_only=True)
+    decrypted_key = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Credential
+        fields = ['id', 'name', 'api_key', 'decrypted_key', 'created_at']
+        read_only_fields = ['created_at']
+
+    def create(self, validated_data):
+        request = self.context['request']
+        company = request.user.company
+        api_key = validated_data.pop('api_key')
+
+        cred = Credential(**validated_data, company=company)
+        cred.api_key = api_key
+        cred.save()
+        return cred
+    
+    def get_decrypted_key(self, obj):
+        return obj.api_key
 
 class ChatBotInstanceSerializer(serializers.ModelSerializer):
     class Meta:

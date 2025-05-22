@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from rest_framework import viewsets, permissions
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback
-from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer
+from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential
+from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -19,6 +19,13 @@ class UserViewSet(viewsets.ModelViewSet):
 class CompanyViewSet(viewsets.ModelViewSet):
     queryset = Company.objects.all()
     serializer_class = CompanySerializer
+
+class CredentialViewSet(viewsets.ModelViewSet):
+    serializer_class = CredentialSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Credential.objects.filter(company=self.request.user.company)
 
 class ChatBotInstanceViewSet(viewsets.ModelViewSet):
     serializer_class = ChatBotInstanceSerializer
