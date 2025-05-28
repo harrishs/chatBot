@@ -5,10 +5,13 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import ChatBots from "./pages/ChatBots.jsx";
+import Credentials from "./pages/Credentials.jsx";
+import Navbar from "./components/NavBar.jsx";
 
 createRoot(document.getElementById("root")).render(
 	<StrictMode>
 		<BrowserRouter>
+			<Navbar />
 			<Routes>
 				<Route path="/login" element={<Login />} />
 				<Route
@@ -24,6 +27,14 @@ createRoot(document.getElementById("root")).render(
 					element={
 						<ProtectedRoute>
 							<ChatBots />
+						</ProtectedRoute>
+					}
+				/>
+				<Route
+					path="/credentials"
+					element={
+						<ProtectedRoute>
+							<Credentials />
 						</ProtectedRoute>
 					}
 				/>

@@ -1,7 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from django.conf import settings
-from cryptography.fernet import Fernet
+from chat.encryption import fernet
 
 class Company(models.Model):
     name = models.CharField(max_length=255)
@@ -42,12 +41,12 @@ class Credential(models.Model):
 
     @property
     def api_key(self):
-        f = settings.fernet
+        f = fernet
         return f.decrypt(self._api_key.encode()).decode()
     
     @api_key.setter
     def api_key(self, raw_key):
-        f = settings.fernet
+        f = fernet
         self._api_key = f.encrypt(raw_key.encode()).decode()
 
 
