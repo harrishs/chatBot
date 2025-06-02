@@ -3,6 +3,7 @@ from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeed
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -52,20 +53,37 @@ class ChatBotInstanceSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('company',)
 
-class JiraSyncSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = JiraSync
-        fields = '__all__'
-        read_only_fields = ('chatBot',)
-
-class ConfluenceSyncSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ConfluenceSync
-        fields = '__all__'
-        read_only_fields = ('chatBot',)
-
 class ChatFeedbackSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatFeedback
         fields = '__all__'
         read_only_fields = ('chatBot',)
+
+class CredentialSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Credential
+        fields = ['id', 'name']
+
+class JiraSyncSerializer(serializers.ModelSerializer):
+    credential = CredentialSummarySerializer(read_only=True)
+    credential_id = serializers.PrimaryKeyRelatedField(
+        queryset=Credential.objects.all(),
+        write_only=True,
+        source='credential',
+    )
+
+    class Meta:
+        model = JiraSync
+        fields = ['id', 'board_url', 'last_sync_time', 'credential', 'credential_id']
+
+class ConfluenceSyncSerializer(serializers.ModelSerializer):
+    credential = CredentialSummarySerializer(read_only=True)
+    credential_id = serializers.PrimaryKeyRelatedField(
+        queryset=Credential.objects.all(),
+        write_only=True,
+        source='credential',
+    )
+
+    class Meta:
+        model = ConfluenceSync
+        fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id']

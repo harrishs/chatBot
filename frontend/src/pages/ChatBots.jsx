@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api/axios";
+import { Link } from "react-router-dom";
 
 function ChatBots() {
 	const [chatbots, setChatbots] = useState([]);
@@ -99,6 +100,7 @@ function ChatBots() {
 						<small>{bot.description}</small>
 						<br />
 						<button onClick={() => handleEdit(bot)}>Edit</button>
+						<Link to={`/chatbots/${bot.id}/syncs`}>🔗 Manage Syncs</Link>
 						<button
 							onClick={() => handleDelete(bot.id)}
 							style={{ marginLeft: "0.5rem" }}

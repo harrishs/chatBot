@@ -42,26 +42,24 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return JiraSync.objects.filter(chatBot__company=self.request.user.company)
+        chatbot_id = self.kwargs['chatbot_id']
+        return JiraSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
     def perform_create(self, serializer):
-        chatBot = serializer.validated_data['chatBot']
-        if chatBot.company != self.request.user.company:
-            raise PermissionError("You cannot create a sync for a chatbot outside your company")
-        serializer.save()
+        chatbot_id = self.kwargs['chatbot_id']
+        serializer.save(chatBot_id=chatbot_id)
 
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ConfluenceSync.objects.filter(chatBot__company=self.request.user.company)
+        chatbot_id = self.kwargs['chatbot_id']
+        return ConfluenceSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
     def perform_create(self, serializer):
-        chatBot = serializer.validated_data['chatBot']
-        if chatBot.company != self.request.user.company:
-            raise PermissionError("You cannot create a sync for a chatbot outside your company")
-        serializer.save()
+        chatbot_id = self.kwargs['chatbot_id']
+        serializer.save(chatBot_id=chatbot_id)
 
 class ChatFeedbackViewSet(viewsets.ModelViewSet):
     serializer_class = ChatFeedbackSerializer
