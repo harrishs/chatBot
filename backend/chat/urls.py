@@ -13,6 +13,18 @@ router.register(r'credentials', CredentialViewSet, basename='credential')
 urlpatterns = [
     path('login/', obtain_auth_token, name='api_token_auth'),
     path('', include(router.urls)),
-    path('chatBots/<int:chatbot_id>/jiraSyncs/', JiraSyncViewSet.as_view({'get': 'list', 'post': 'create'})),
-    path('chatBots/<int:chatbot_id>/confluenceSyncs/', ConfluenceSyncViewSet.as_view({'get': 'list', 'post': 'create'})),
+    path('chatBots/<int:chatbot_id>/jiraSyncs/', JiraSyncViewSet.as_view({'get': 'list', 'post': 'create', 'delete': 'destroy'})),
+    path('chatBots/<int:chatbot_id>/confluenceSyncs/', ConfluenceSyncViewSet.as_view({'get': 'list', 'post': 'create', 'delete': 'destroy'})),
+    path('chatBots/<int:chatbot_id>/jiraSyncs/<int:pk>/', JiraSyncViewSet.as_view({
+        'delete': 'destroy',
+        'get': 'retrieve',
+        'put': 'update',
+        'patch': 'partial_update',
+    })),
+    path('chatBots/<int:chatbot_id>/confluenceSyncs/<int:pk>/', ConfluenceSyncViewSet.as_view({
+        'delete': 'destroy',
+        'get': 'retrieve',
+        'put': 'update',
+        'patch': 'partial_update',
+    })),
 ]

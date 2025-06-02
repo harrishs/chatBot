@@ -36,15 +36,35 @@ function ChatBotSyncs() {
 
 	const submitJira = async (e) => {
 		e.preventDefault();
-		await api.post(`/chatBots/${chatBotId}/jiraSyncs/`, newJira);
-		setNewJira({ board_url: "", credential_id: "" });
-		loadData();
+		console.log("Submitting Jira sync:", newJira);
+		try {
+			await api.post(`/chatBots/${chatBotId}/jiraSyncs/`, newJira);
+			setNewJira({ board_url: "", credential_id: "" });
+			loadData();
+		} catch (err) {
+			console.error("Error submitting Jira sync", err);
+		}
 	};
 
 	const submitConfluence = async (e) => {
 		e.preventDefault();
-		await api.post(`/chatBots/${chatBotId}/confluenceSyncs/`, newConfluence);
-		setNewConfluence({ space_url: "", credential_id: "" });
+		console.log("Submitting Confluence sync:", newConfluence);
+		try {
+			await api.post(`/chatBots/${chatBotId}/confluenceSyncs/`, newConfluence);
+			setNewConfluence({ space_url: "", credential_id: "" });
+			loadData();
+		} catch (err) {
+			console.error("Error submitting Confluence sync", err);
+		}
+	};
+
+	const deleteJira = async (id) => {
+		await api.delete(`/chatBots/${chatBotId}/jiraSyncs/${id}/`);
+		loadData();
+	};
+
+	const deleteConfluence = async (id) => {
+		await api.delete(`/chatBots/${chatBotId}/confluenceSyncs/${id}/`);
 		loadData();
 	};
 
@@ -62,7 +82,10 @@ function ChatBotSyncs() {
 				<select
 					value={newJira.credential_id}
 					onChange={(e) =>
-						setNewJira({ ...newJira, credential_id: e.target.value })
+						setNewJira({
+							...newJira,
+							credential_id: parseInt(e.target.value, 10),
+						})
 					}
 				>
 					<option value="">Select Credential</option>
@@ -79,6 +102,7 @@ function ChatBotSyncs() {
 				{jiraSyncs.map((sync) => (
 					<li key={sync.id}>
 						{sync.board_url} (Credential: {sync.credential?.name})
+						<button onClick={() => deleteJira(sync.id)}>Delete</button>
 					</li>
 				))}
 			</ul>
@@ -97,7 +121,7 @@ function ChatBotSyncs() {
 					onChange={(e) =>
 						setNewConfluence({
 							...newConfluence,
-							credential_id: e.target.value,
+							credential_id: parseInt(e.target.value, 10),
 						})
 					}
 				>
@@ -115,6 +139,7 @@ function ChatBotSyncs() {
 				{confluenceSyncs.map((sync) => (
 					<li key={sync.id}>
 						{sync.space_url} (Credential: {sync.credential?.name})
+						<button onClick={() => deleteConfluence(sync.id)}>Delete</button>
 					</li>
 				))}
 			</ul>

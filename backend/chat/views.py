@@ -3,6 +3,13 @@ from rest_framework import viewsets, permissions
 from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer
 from django.contrib.auth import get_user_model
+import logging
+from rest_framework import viewsets, permissions, status
+from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
+
+logger = logging.getLogger(__name__)
+
 
 User = get_user_model()
 
@@ -45,9 +52,27 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         chatbot_id = self.kwargs['chatbot_id']
         return JiraSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
-    def perform_create(self, serializer):
+    def create(self, request, *args, **kwargs):
+        # Attach the chatbot manually since it's passed through the URL
         chatbot_id = self.kwargs['chatbot_id']
-        serializer.save(chatBot_id=chatbot_id)
+
+        try:
+            chatBot = ChatBotInstance.objects.get(id=chatbot_id, company=request.user.company)
+        except ChatBotInstance.DoesNotExist:
+            raise PermissionDenied("❌ Invalid chatbot or not in your company")
+
+        # Include the chatbot in the validated data
+        mutable_data = request.data.copy()
+        mutable_data['chatBot'] = chatBot.id
+
+        serializer = self.get_serializer(data=mutable_data)
+
+        if not serializer.is_valid():
+            logger.error("❌ Validation error: %s", serializer.errors)
+            return Response(serializer.errors, status=400)
+
+        serializer.save(chatBot=chatBot)
+        return Response(serializer.data, status=201)
 
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
@@ -57,9 +82,29 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         chatbot_id = self.kwargs['chatbot_id']
         return ConfluenceSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
-    def perform_create(self, serializer):
+    def create(self, request, *args, **kwargs):
         chatbot_id = self.kwargs['chatbot_id']
-        serializer.save(chatBot_id=chatbot_id)
+
+        try:
+            chatBot = ChatBotInstance.objects.get(
+                id=chatbot_id,
+                company=request.user.company
+            )
+        except ChatBotInstance.DoesNotExist:
+            raise PermissionDenied("❌ Invalid chatbot or not in your company")
+
+        # Inject chatBot into the data explicitly
+        mutable_data = request.data.copy()
+        mutable_data['chatBot'] = chatBot.id
+
+        serializer = self.get_serializer(data=mutable_data)
+
+        if not serializer.is_valid():
+            logger.error("❌ ConfluenceSync Validation Error: %s", serializer.errors)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save(chatBot=chatBot)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 class ChatFeedbackViewSet(viewsets.ModelViewSet):
     serializer_class = ChatFeedbackSerializer
