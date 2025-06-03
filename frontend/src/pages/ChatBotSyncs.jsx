@@ -227,16 +227,16 @@ function ChatBotSyncs() {
 						{editingConfluence === sync.id ? (
 							<form onSubmit={editConfluence}>
 								<input
-									value={editingConfluenceData.board_url}
+									value={editingConfluenceData.space_url}
 									onChange={(e) =>
 										setEditingConfluenceData({
 											...editingConfluenceData,
-											board_url: e.target.value,
+											space_url: e.target.value,
 										})
 									}
 								/>
 								<select
-									value={editingJiraData.credential_id}
+									value={editingConfluenceData.credential_id}
 									onChange={(e) =>
 										setEditingConfluenceData({
 											...editingConfluenceData,
@@ -261,12 +261,12 @@ function ChatBotSyncs() {
 							</form>
 						) : (
 							<>
-								{sync.board_url} (Credential: {sync.credential?.name})
+								{sync.space_url} (Credential: {sync.credential?.name})
 								<button
 									onClick={() => {
 										setEditingConfluence(sync.id);
 										setEditingConfluenceData({
-											board_url: sync.board_url,
+											space_url: sync.space_url,
 											credential_id: sync.credential?.id,
 										});
 									}}
