@@ -15,6 +15,17 @@ function ChatBotSyncs() {
 		credential_id: "",
 	});
 
+	const [editingJira, setEditingJira] = useState(null);
+	const [editingConfluence, setEditingConfluence] = useState(null);
+	const [editingJiraData, setEditingJiraData] = useState({
+		board_url: "",
+		credential_id: "",
+	});
+	const [editingConfluenceData, setEditingConfluenceData] = useState({
+		space_url: "",
+		credential_id: "",
+	});
+
 	const loadData = async () => {
 		try {
 			const [jiraRes, confRes, credRes] = await Promise.all([
@@ -36,7 +47,6 @@ function ChatBotSyncs() {
 
 	const submitJira = async (e) => {
 		e.preventDefault();
-		console.log("Submitting Jira sync:", newJira);
 		try {
 			await api.post(`/chatBots/${chatBotId}/jiraSyncs/`, newJira);
 			setNewJira({ board_url: "", credential_id: "" });
@@ -48,7 +58,6 @@ function ChatBotSyncs() {
 
 	const submitConfluence = async (e) => {
 		e.preventDefault();
-		console.log("Submitting Confluence sync:", newConfluence);
 		try {
 			await api.post(`/chatBots/${chatBotId}/confluenceSyncs/`, newConfluence);
 			setNewConfluence({ space_url: "", credential_id: "" });
@@ -66,6 +75,36 @@ function ChatBotSyncs() {
 	const deleteConfluence = async (id) => {
 		await api.delete(`/chatBots/${chatBotId}/confluenceSyncs/${id}/`);
 		loadData();
+	};
+
+	const editJira = async (e) => {
+		e.preventDefault();
+		try {
+			await api.patch(
+				`/chatBots/${chatBotId}/jiraSyncs/${editingJira}/`,
+				editingJiraData
+			);
+			setEditingJira(null);
+			setEditingJiraData({ board_url: "", credential_id: "" });
+			loadData();
+		} catch (err) {
+			console.error("Error editing Jira sync", err);
+		}
+	};
+
+	const editConfluence = async (e) => {
+		e.preventDefault();
+		try {
+			await api.patch(
+				`/chatBots/${chatBotId}/confluenceSyncs/${editingConfluence}/`,
+				editingConfluenceData
+			);
+			setEditingConfluence(null);
+			setEditingConfluenceData({ space_url: "", credential_id: "" });
+			loadData();
+		} catch (err) {
+			console.error("Error editing Confluence sync", err);
+		}
 	};
 
 	return (
@@ -101,7 +140,54 @@ function ChatBotSyncs() {
 			<ul>
 				{jiraSyncs.map((sync) => (
 					<li key={sync.id}>
-						{sync.board_url} (Credential: {sync.credential?.name})
+						{editingJira === sync.id ? (
+							<form onSubmit={editJira}>
+								<input
+									value={editingJiraData.board_url}
+									onChange={(e) =>
+										setEditingJiraData({
+											...editingJiraData,
+											board_url: e.target.value,
+										})
+									}
+								/>
+								<select
+									value={editingJiraData.credential_id}
+									onChange={(e) =>
+										setEditingJiraData({
+											...editingJiraData,
+											credential_id: parseInt(e.target.value, 10),
+										})
+									}
+								>
+									<option value="">Select Credential</option>
+									{credentials.map((cred) => (
+										<option key={cred.id} value={cred.id}>
+											{cred.name}
+										</option>
+									))}
+								</select>
+								<button type="submit">Save</button>
+								<button type="button" onClick={() => setEditingJira(null)}>
+									Cancel
+								</button>
+							</form>
+						) : (
+							<>
+								{sync.board_url} (Credential: {sync.credential?.name})
+								<button
+									onClick={() => {
+										setEditingJira(sync.id);
+										setEditingJiraData({
+											board_url: sync.board_url,
+											credential_id: sync.credential?.id,
+										});
+									}}
+								>
+									Edit
+								</button>
+							</>
+						)}
 						<button onClick={() => deleteJira(sync.id)}>Delete</button>
 					</li>
 				))}
@@ -138,7 +224,57 @@ function ChatBotSyncs() {
 			<ul>
 				{confluenceSyncs.map((sync) => (
 					<li key={sync.id}>
-						{sync.space_url} (Credential: {sync.credential?.name})
+						{editingConfluence === sync.id ? (
+							<form onSubmit={editConfluence}>
+								<input
+									value={editingConfluenceData.board_url}
+									onChange={(e) =>
+										setEditingConfluenceData({
+											...editingConfluenceData,
+											board_url: e.target.value,
+										})
+									}
+								/>
+								<select
+									value={editingJiraData.credential_id}
+									onChange={(e) =>
+										setEditingConfluenceData({
+											...editingConfluenceData,
+											credential_id: parseInt(e.target.value, 10),
+										})
+									}
+								>
+									<option value="">Select Credential</option>
+									{credentials.map((cred) => (
+										<option key={cred.id} value={cred.id}>
+											{cred.name}
+										</option>
+									))}
+								</select>
+								<button type="submit">Save</button>
+								<button
+									type="button"
+									onClick={() => setEditingConfluence(null)}
+								>
+									Cancel
+								</button>
+							</form>
+						) : (
+							<>
+								{sync.board_url} (Credential: {sync.credential?.name})
+								<button
+									onClick={() => {
+										setEditingConfluence(sync.id);
+										setEditingConfluenceData({
+											board_url: sync.board_url,
+											credential_id: sync.credential?.id,
+										});
+									}}
+								>
+									Edit
+								</button>
+							</>
+						)}
 						<button onClick={() => deleteConfluence(sync.id)}>Delete</button>
 					</li>
 				))}
