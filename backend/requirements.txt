@@ -6,4 +6,4 @@ python-decouple==3.8
 sqlparse==0.5.3
 django-cors-headers
 cryptography>=41.0
-
+requests

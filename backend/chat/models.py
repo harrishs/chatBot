@@ -79,5 +79,35 @@ class ChatFeedback(models.Model):
 
     def __str__(self):
         return f"Feedback for {self.chatBot.name} ({self.chatBot.company.name}) - Helpful: {self.is_helpful}"
+
+class JiraIssue(models.Model):
+    sync = models.ForeignKey(JiraSync, on_delete=models.CASCADE, related_name='issues')
+    issue_key = models.CharField(max_length=100)
+    summary = models.TextField()
+    description = models.TextField(null=True, blank=True)
+    status = models.CharField(max_length=100)
+    created_at = models.DateTimeField()
+    updated_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"{self.issue_key} - {self.summary}"
     
+class JiraComment(models.Model):
+    issue = models.ForeignKey(JiraIssue, on_delete=models.CASCADE, related_name='comments')
+    author = models.CharField(max_length=255)
+    content = models.TextField()
+    created_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"Comment by {self.author} on {self.issue.issue_key}"
+    
+class ConfluencePage(models.Model):
+    sync = models.ForeignKey(ConfluenceSync, on_delete=models.CASCADE, related_name='pages')
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    url = models.URLField()
+    last_updated = models.DateTimeField()
+
+    def __str__(self):
+        return f"{self.title}"
 
