@@ -3,37 +3,47 @@ from chat.encryption import decrypt_api_key
 from urllib.parse import urlparse
 from chat.models import JiraIssue, JiraComment
 
-def extract_board_id(board_url):
-    return board_url.rstrip("/").split("/")[-1]
+def extract_project_key(board_url):
+    # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
+    # Extract 'CPG' between /projects/ and /boards/
+    try:
+        parts = board_url.split("/projects/")
+        if len(parts) > 1:
+            project_part = parts[1].split("/")[0]
+            return project_part
+    except Exception as e:
+        print(f"Error extracting project key: {e}")
+    return ""  # fallback if parsing fails
 
 def get_base_domain(board_url):
     parsed = urlparse(board_url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
-def fetch_comments(base_url, issue_key, api_key):
+def fetch_comments(base_url, issue_key, api_key, email):
     url = f"{base_url}/rest/api/3/issue/{issue_key}/comment"
+    auth = requests.auth.HTTPBasicAuth(email, api_key)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Accept": "application/json"
     }
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, auth=auth)
     response.raise_for_status()
 
     return response.json().get("comments", [])
 
 def fetch_jira_issues(sync):
     api_key = decrypt_api_key(sync.credential._api_key)
-    board_id = extract_board_id(sync.board_url)
+    project_key = extract_project_key(sync.board_url)
     base_url = get_base_domain(sync.board_url)
+    email = sync.credential.email
 
-    issue_url = f"{base_url}/rest/agile/1.0/board/{board_id}/issue"
+    issue_url = f"{base_url}/rest/api/3/search?jql=project={project_key}"
+    auth = requests.auth.HTTPBasicAuth(email, api_key)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Accept": "application/json"
     }
 
-    response = requests.get(issue_url, headers=headers)
+    response = requests.get(issue_url, headers=headers, auth=auth)
     response.raise_for_status()
     issues = response.json().get("issues", [])
 
@@ -55,7 +65,7 @@ def fetch_jira_issues(sync):
         )
 
         # Fetch and save comments
-        comments = fetch_comments(base_url, issue_key, api_key)
+        comments = fetch_comments(base_url, issue_key, api_key, email)
         for comment in comments:
             JiraComment.objects.update_or_create(
                 issue=jira_issue,

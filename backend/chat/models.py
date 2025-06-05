@@ -32,6 +32,7 @@ class ChatBotInstance(models.Model):
 class Credential(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='credentials')
     name = models.CharField(max_length=100)
+    email = models.EmailField()
     _api_key = models.CharField(max_length=512)
     created_at = models.DateTimeField(auto_now_add=True)
 

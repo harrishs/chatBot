@@ -5,6 +5,7 @@ function Credentials() {
 	const [name, setName] = useState("");
 	const [apiKey, setApiKey] = useState("");
 	const [credentials, setCredentials] = useState([]);
+	const [email, setEmail] = useState("");
 
 	const fetchCredentials = async () => {
 		try {
@@ -25,10 +26,12 @@ function Credentials() {
 			await api.post("/credentials/", {
 				name: name,
 				api_key: apiKey,
+				email: email,
 			});
 
 			setName("");
 			setApiKey("");
+			setEmail("");
 
 			fetchCredentials(); // Refresh the list after adding a new credential
 		} catch (err) {
@@ -52,6 +55,16 @@ function Credentials() {
 					/>
 				</div>
 				<div>
+					<label>API Email:</label>
+					<br />
+					<input
+						type="text"
+						value={email}
+						onChange={(e) => setEmail(e.target.value)}
+						required
+					/>
+				</div>
+				<div>
 					<label>API Key:</label>
 					<br />
 					<input
@@ -68,8 +81,8 @@ function Credentials() {
 			<ul>
 				{credentials.map((cred) => (
 					<li key={cred.id}>
-						<strong>{cred.name}</strong> – Key:{" "}
-						<code>{cred.decrypted_key}</code>
+						Key Name: <code>{cred.name}</code> <br></br> Email:{" "}
+						<code>{cred.email}</code>
 					</li>
 				))}
 			</ul>

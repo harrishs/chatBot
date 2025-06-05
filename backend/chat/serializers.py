@@ -31,7 +31,7 @@ class CredentialSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Credential
-        fields = ['id', 'name', 'api_key', 'decrypted_key', 'created_at']
+        fields = ['id', 'name', 'email', 'api_key', 'decrypted_key', 'created_at']
         read_only_fields = ['created_at']
 
     def create(self, validated_data):
@@ -62,7 +62,7 @@ class ChatFeedbackSerializer(serializers.ModelSerializer):
 class CredentialSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Credential
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'email']
 
 class JiraSyncSerializer(serializers.ModelSerializer):
     credential = CredentialSummarySerializer(read_only=True)
