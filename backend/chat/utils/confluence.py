@@ -2,7 +2,6 @@ import requests
 from urllib.parse import urlparse, urlencode
 from chat.models import ConfluencePage
 from chat.encryption import decrypt_api_key
-import traceback
 
 def get_confluence_base_url(space_url):
     """
@@ -29,7 +28,7 @@ def extract_space_key(space_url):
 
 def fetch_confluence_pages(sync):
     try:
-        api_key = decrypt_api_key(sync.credential.api_key)
+        api_key = decrypt_api_key(sync.credential._api_key)
         email = sync.credential.email
         base_url = get_confluence_base_url(sync.space_url)
         space_key = extract_space_key(sync.space_url)
@@ -45,24 +44,18 @@ def fetch_confluence_pages(sync):
         auth = (email, api_key)
         headers = {
             "Accept": "application/json"
-        }   
-
-        print(f"Space Key: {space_key}")
-        print(f" Request URL: {url}")
+        }
 
         response = requests.get(url, auth=auth, headers=headers)
         response.raise_for_status()
 
         pages = response.json().get("results", [])
-        print(f"Raw API response: {response.json()}")
 
         for page in pages:
             title = page.get("title", "")
             content = page.get("body", {}).get("storage", {}).get("value", "")
             last_updated = page.get("version", {}).get("when", "")
             page_url = f"{base_url}/wiki{page.get('_links', {}).get('webui', '')}"
-
-            print(f"Saving page: {title}")
 
             ConfluencePage.objects.update_or_create(
                 sync=sync,
@@ -79,4 +72,3 @@ def fetch_confluence_pages(sync):
     except Exception as e:
 
         print(f"Request error while fetching Confluence pages: {e}")
-        traceback.print_exc()
