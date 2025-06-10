@@ -33,6 +33,19 @@ class CredentialViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Credential.objects.filter(company=self.request.user.company)
+    
+    def perform_create(self, serializer):
+        serializer.save(company=self.request.user.company)
+
+    def perform_update(self, serializer):
+        if serializer.instance.company != self.request.user.company:
+            raise PermissionDenied("You cannot update credentials for a different company's credentials")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.company != self.request.user.company:
+            raise PermissionDenied("You cannot delete credentials for a different company's credentials")
+        instance.delete()
 
 class ChatBotInstanceViewSet(viewsets.ModelViewSet):
     serializer_class = ChatBotInstanceSerializer

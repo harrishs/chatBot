@@ -37,12 +37,22 @@ class CredentialSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context['request']
         company = request.user.company
+        validated_data.pop('company', None)  # Ensure company is not in validated_data
         api_key = validated_data.pop('api_key')
 
         cred = Credential(**validated_data, company=company)
         cred.api_key = api_key
         cred.save()
         return cred
+
+    def update(self, instance, validated_data):
+        api_key = validated_data.pop('api_key', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if api_key:
+            instance.api_key = api_key
+        instance.save()
+        return instance
     
     def get_decrypted_key(self, obj):
         return obj.api_key

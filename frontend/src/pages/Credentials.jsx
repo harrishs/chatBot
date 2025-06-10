@@ -6,6 +6,7 @@ function Credentials() {
 	const [apiKey, setApiKey] = useState("");
 	const [credentials, setCredentials] = useState([]);
 	const [email, setEmail] = useState("");
+	const [editId, setEditId] = useState(null);
 
 	const fetchCredentials = async () => {
 		try {
@@ -23,25 +24,52 @@ function Credentials() {
 	const handleSubmit = async (e) => {
 		e.preventDefault();
 		try {
-			await api.post("/credentials/", {
-				name: name,
-				api_key: apiKey,
-				email: email,
-			});
-
+			if (editId) {
+				await api.put(`/credentials/${editId}/`, {
+					name: name,
+					api_key: apiKey,
+					email: email,
+				});
+			} else {
+				await api.post("/credentials/", {
+					name: name,
+					api_key: apiKey,
+					email: email,
+				});
+			}
 			setName("");
 			setApiKey("");
 			setEmail("");
+			setEditId(null);
 
-			fetchCredentials(); // Refresh the list after adding a new credential
+			fetchCredentials();
 		} catch (err) {
 			console.error("Failed to save credentials:", err);
 		}
 	};
 
+	const handleDelete = async (id) => {
+		if (!window.confirm("Are you sure you want to delete this credential?"))
+			return;
+		try {
+			await api.delete(`/credentials/${id}/`);
+			fetchCredentials();
+		} catch (err) {
+			console.error("Failed to delete credential:", err);
+		}
+	};
+
+	const handleEdit = (cred) => {
+		setName(cred.name);
+		setEmail(cred.email);
+		setEditId(cred.id);
+		//Api key not available as it is write-only, user must re-enter it
+		setApiKey("");
+	};
+
 	return (
 		<div style={{ padding: "2rem" }}>
-			<h2>Create a New API Credential</h2>
+			<h2>{editId ? "Edit API Credential" : "Create a New API Credential"}</h2>
 
 			<form onSubmit={handleSubmit} style={{ marginBottom: "2rem" }}>
 				<div>
@@ -58,7 +86,7 @@ function Credentials() {
 					<label>API Email:</label>
 					<br />
 					<input
-						type="text"
+						type="email"
 						value={email}
 						onChange={(e) => setEmail(e.target.value)}
 						required
@@ -72,17 +100,39 @@ function Credentials() {
 						value={apiKey}
 						onChange={(e) => setApiKey(e.target.value)}
 						required
+						placeholder={editId ? "Enter New/ Existing Key" : ""}
 					/>
 				</div>
-				<button type="submit">Save Credential</button>
+				<button type="submit">{editId ? "Update" : "Save"} Credential</button>
+				{editId && (
+					<button
+						type="button"
+						style={{ marginLeft: "1rem" }}
+						onClick={() => {
+							setEditId(null);
+							setName("");
+							setApiKey("");
+							setEmail("");
+						}}
+					>
+						Cancel
+					</button>
+				)}
 			</form>
 
 			<h3>Existing Credentials</h3>
 			<ul>
 				{credentials.map((cred) => (
 					<li key={cred.id}>
-						Key Name: <code>{cred.name}</code> <br></br> Email:{" "}
-						<code>{cred.email}</code>
+						<strong>{cred.name}</strong> — <code>{cred.email}</code>
+						<br />
+						<button onClick={() => handleEdit(cred)}>Edit</button>
+						<button
+							onClick={() => handleDelete(cred.id)}
+							style={{ marginLeft: "1rem" }}
+						>
+							Delete
+						</button>
 					</li>
 				))}
 			</ul>
