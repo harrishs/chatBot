@@ -56,6 +56,13 @@ class JiraSync(models.Model):
     board_url = models.URLField()
     credential = models.ForeignKey(Credential, on_delete=models.CASCADE, null=True, blank=True)
     last_sync_time = models.DateTimeField(null=True, blank=True)
+    SYNC_INTERVAL_CHOICES = [
+        ('manual', 'Manual'),
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+    ]
+    sync_interval = models.CharField(max_length=10, choices=SYNC_INTERVAL_CHOICES, default='manual')
 
     def __str__(self):
         return f"Jira Sync for {self.chatBot.name} ({self.chatBot.company.name})"
@@ -66,6 +73,13 @@ class ConfluenceSync(models.Model):
     space_url = models.URLField()
     credential = models.ForeignKey(Credential, on_delete=models.CASCADE, null=True, blank=True)
     last_sync_time = models.DateTimeField(null=True, blank=True)
+    SYNC_INTERVAL_CHOICES = [
+        ('manual', 'Manual'),
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+    ]
+    sync_interval = models.CharField(max_length=10, choices=SYNC_INTERVAL_CHOICES, default='manual')
 
     def __str__(self):
         return f"Confluence Sync for {self.chatBot.name} ({self.chatBot.company.name})"

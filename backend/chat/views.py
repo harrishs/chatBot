@@ -7,6 +7,9 @@ import logging
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
+from chat.utils.jira import fetch_jira_issues
+from chat.utils.confluence import fetch_confluence_pages
 
 logger = logging.getLogger(__name__)
 
@@ -60,19 +63,23 @@ class ChatBotInstanceViewSet(viewsets.ModelViewSet):
 class JiraSyncViewSet(viewsets.ModelViewSet):
     serializer_class = JiraSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'id'
+    lookup_url_kwarg = 'pk'
 
     def get_queryset(self):
-        chatbot_id = self.kwargs['chatbot_id']
+        chatbot_id = self.kwargs['chatbot_pk']
+        if not chatbot_id:
+            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
         return JiraSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
     def create(self, request, *args, **kwargs):
         # Attach the chatbot manually since it's passed through the URL
-        chatbot_id = self.kwargs['chatbot_id']
+        chatbot_id = self.kwargs['chatbot_pk']
 
         try:
             chatBot = ChatBotInstance.objects.get(id=chatbot_id, company=request.user.company)
         except ChatBotInstance.DoesNotExist:
-            raise PermissionDenied("❌ Invalid chatbot or not in your company")
+            raise PermissionDenied("Invalid chatbot or not in your company")
 
         # Include the chatbot in the validated data
         mutable_data = request.data.copy()
@@ -81,22 +88,30 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=mutable_data)
 
         if not serializer.is_valid():
-            logger.error("❌ Validation error: %s", serializer.errors)
+            logger.error("Validation error: %s", serializer.errors)
             return Response(serializer.errors, status=400)
 
         serializer.save(chatBot=chatBot)
         return Response(serializer.data, status=201)
+    
+    @action(detail=True, methods=['post'])
+    def sync_now(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        fetch_jira_issues(sync)
+        return Response({"status": "Jira sync initiated"}, status=status.HTTP_200_OK)
 
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        chatbot_id = self.kwargs['chatbot_id']
+        chatbot_id = self.kwargs['chatbot_pk']
+        if not chatbot_id:
+            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
         return ConfluenceSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
     
     def create(self, request, *args, **kwargs):
-        chatbot_id = self.kwargs['chatbot_id']
+        chatbot_id = self.kwargs['chatbot_pk']
 
         try:
             chatBot = ChatBotInstance.objects.get(
@@ -104,7 +119,7 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
                 company=request.user.company
             )
         except ChatBotInstance.DoesNotExist:
-            raise PermissionDenied("❌ Invalid chatbot or not in your company")
+            raise PermissionDenied("Invalid chatbot or not in your company")
 
         # Inject chatBot into the data explicitly
         mutable_data = request.data.copy()
@@ -113,11 +128,17 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=mutable_data)
 
         if not serializer.is_valid():
-            logger.error("❌ ConfluenceSync Validation Error: %s", serializer.errors)
+            logger.error("ConfluenceSync Validation Error: %s", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         serializer.save(chatBot=chatBot)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['post'])
+    def sync_now(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        fetch_confluence_pages(sync)
+        return Response({"status": "Confluence sync initiated"}, status=status.HTTP_200_OK)
 
 class ChatFeedbackViewSet(viewsets.ModelViewSet):
     serializer_class = ChatFeedbackSerializer

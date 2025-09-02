@@ -9,10 +9,15 @@ function ChatBotSyncs() {
 	const [confluenceSyncs, setConfluenceSyncs] = useState([]);
 	const [credentials, setCredentials] = useState([]);
 
-	const [newJira, setNewJira] = useState({ board_url: "", credential_id: "" });
+	const [newJira, setNewJira] = useState({
+		board_url: "",
+		credential_id: "",
+		sync_interval: "manual",
+	});
 	const [newConfluence, setNewConfluence] = useState({
 		space_url: "",
 		credential_id: "",
+		sync_interval: "manual",
 	});
 
 	const [editingJira, setEditingJira] = useState(null);
@@ -20,10 +25,12 @@ function ChatBotSyncs() {
 	const [editingJiraData, setEditingJiraData] = useState({
 		board_url: "",
 		credential_id: "",
+		sync_interval: "manual",
 	});
 	const [editingConfluenceData, setEditingConfluenceData] = useState({
 		space_url: "",
 		credential_id: "",
+		sync_interval: "manual",
 	});
 
 	const loadData = async () => {
@@ -49,7 +56,7 @@ function ChatBotSyncs() {
 		e.preventDefault();
 		try {
 			await api.post(`/chatBots/${chatBotId}/jiraSyncs/`, newJira);
-			setNewJira({ board_url: "", credential_id: "" });
+			setNewJira({ board_url: "", credential_id: "", sync_interval: "manual" });
 			loadData();
 		} catch (err) {
 			console.error("Error submitting Jira sync", err);
@@ -60,7 +67,11 @@ function ChatBotSyncs() {
 		e.preventDefault();
 		try {
 			await api.post(`/chatBots/${chatBotId}/confluenceSyncs/`, newConfluence);
-			setNewConfluence({ space_url: "", credential_id: "" });
+			setNewConfluence({
+				space_url: "",
+				credential_id: "",
+				sync_interval: "manual",
+			});
 			loadData();
 		} catch (err) {
 			console.error("Error submitting Confluence sync", err);
@@ -85,7 +96,11 @@ function ChatBotSyncs() {
 				editingJiraData
 			);
 			setEditingJira(null);
-			setEditingJiraData({ board_url: "", credential_id: "" });
+			setEditingJiraData({
+				board_url: "",
+				credential_id: "",
+				sync_interval: "manual",
+			});
 			loadData();
 		} catch (err) {
 			console.error("Error editing Jira sync", err);
@@ -100,11 +115,25 @@ function ChatBotSyncs() {
 				editingConfluenceData
 			);
 			setEditingConfluence(null);
-			setEditingConfluenceData({ space_url: "", credential_id: "" });
+			setEditingConfluenceData({
+				space_url: "",
+				credential_id: "",
+				sync_interval: "manual",
+			});
 			loadData();
 		} catch (err) {
 			console.error("Error editing Confluence sync", err);
 		}
+	};
+
+	const syncJiraNow = async (id) => {
+		await api.post(`/chatBots/${chatBotId}/jiraSyncs/${id}/sync_now/`);
+		loadData();
+	};
+
+	const syncConfluenceNow = async (id) => {
+		await api.post(`/chatBots/${chatBotId}/confluenceSyncs/${id}/sync_now/`);
+		loadData();
 	};
 
 	return (
@@ -133,6 +162,17 @@ function ChatBotSyncs() {
 							{cred.name}
 						</option>
 					))}
+				</select>
+				<select
+					value={newJira.sync_interval}
+					onChange={(e) =>
+						setNewJira({ ...newJira, sync_interval: e.target.value })
+					}
+				>
+					<option value="manual">Manual</option>
+					<option value="daily">Daily</option>
+					<option value="weekly">Weekly</option>
+					<option value="monthly">Monthly</option>
 				</select>
 				<button type="submit">Add Jira Sync</button>
 			</form>
@@ -189,6 +229,7 @@ function ChatBotSyncs() {
 							</>
 						)}
 						<button onClick={() => deleteJira(sync.id)}>Delete</button>
+						<button onClick={() => syncJiraNow(sync.id)}>Sync Now</button>
 					</li>
 				))}
 			</ul>
@@ -217,6 +258,20 @@ function ChatBotSyncs() {
 							{cred.name}
 						</option>
 					))}
+				</select>
+				<select
+					value={newConfluence.sync_interval}
+					onChange={(e) =>
+						setNewConfluence({
+							...newConfluence,
+							sync_interval: e.target.value,
+						})
+					}
+				>
+					<option value="manual">Manual</option>
+					<option value="daily">Daily</option>
+					<option value="weekly">Weekly</option>
+					<option value="monthly">Monthly</option>
 				</select>
 				<button type="submit">Add Confluence Sync</button>
 			</form>
@@ -276,6 +331,7 @@ function ChatBotSyncs() {
 							</>
 						)}
 						<button onClick={() => deleteConfluence(sync.id)}>Delete</button>
+						<button onClick={() => syncConfluenceNow(sync.id)}>Sync Now</button>
 					</li>
 				))}
 			</ul>

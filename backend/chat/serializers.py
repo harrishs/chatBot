@@ -81,10 +81,11 @@ class JiraSyncSerializer(serializers.ModelSerializer):
         write_only=True,
         source='credential',
     )
+    sync_interval = serializers.ChoiceField(choices=JiraSync.SYNC_INTERVAL_CHOICES, default='manual')
 
     class Meta:
         model = JiraSync
-        fields = ['id', 'board_url', 'last_sync_time', 'credential', 'credential_id']
+        fields = ['id', 'board_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
 
 class ConfluenceSyncSerializer(serializers.ModelSerializer):
     credential = CredentialSummarySerializer(read_only=True)
@@ -93,7 +94,8 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
         write_only=True,
         source='credential',
     )
+    sync_interval = serializers.ChoiceField(choices=ConfluenceSync.SYNC_INTERVAL_CHOICES, default='manual')
 
     class Meta:
         model = ConfluenceSync
-        fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id']
+        fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
