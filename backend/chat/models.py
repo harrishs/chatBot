@@ -126,3 +126,44 @@ class ConfluencePage(models.Model):
     def __str__(self):
         return f"{self.title}"
 
+class GitCredential(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='gitCredentials')
+    name = models.CharField(max_length=255)
+    github_username = models.CharField(max_length=255)
+    _token = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.github_username})"
+    
+class GitRepoSync(models.Model):
+    chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='gitRepoSyncs')
+    credential = models.ForeignKey(GitCredential, on_delete=models.PROTECT, related_name='repoSyncs')
+    repo_full_name = models.CharField(max_length=300)
+    branch = models.CharField(max_length=100, default='main')
+    last_sync_time = models.DateTimeField(null=True, blank=True)
+    SYNC_INTERVAL_CHOICES = [
+        ('manual', 'Manual'),
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+    ]
+    sync_interval = models.CharField(max_length=10, choices=SYNC_INTERVAL_CHOICES, default='manual')
+
+    def __str__(self):
+        return f"{self.repo_full_name}@{self.branch} ({self.chatBot.name})"
+    
+class GitRepoFile(models.Model):
+    sync = models.ForeignKey(GitRepoSync, on_delete=models.CASCADE, related_name='files')
+    path = models.CharField(max_length=2000)
+    sha = models.CharField(max_length=100)
+    size = models.IntegerField()
+    url = models.URLField()
+    content = models.TextField()
+    last_updated = models.DateTimeField()
+
+    class Meta:
+        unique_together = ('sync', 'path')
+
+    def __str__(self):
+        return f"{self.path} ({self.sync.repo_full_name})"

@@ -1,7 +1,7 @@
-from django.shortcuts import render
-from rest_framework import viewsets, permissions
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential
-from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer
+from django.shortcuts import render, get_object_or_404
+from rest_framework import viewsets, permissions, status
+from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
+from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
 import logging
 from rest_framework import viewsets, permissions, status
@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
+from chat.utils.github import run_github_sync
 
 logger = logging.getLogger(__name__)
 
@@ -152,3 +153,47 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
         if chatBot.company != self.request.user.company:
             raise PermissionError("You cannot create feedback for a chatbot outside your company")
         serializer.save()
+
+class GitCredentialViewSet(viewsets.ModelViewSet):
+    serializer_class = GitCredentialSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return GitCredential.objects.filter(company=self.request.user.company)
+    
+    def perform_destroy(self, instance):
+        if instance.company != self.request.user.company:
+            raise PermissionDenied("You cannot delete git credentials for a different company")
+        return super().perform_destroy(instance)
+    
+class GitRepoSyncViewSet(viewsets.ModelViewSet):
+    serializer_class = GitRepoSyncSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_chatbot(self):
+        chatbot_id = self.kwargs['chatbot_pk']
+        return get_object_or_404(ChatBotInstance, id=chatbot_id, company=self.request.user.company)
+    
+    def get_queryset(self):
+        chatbot_id = self.kwargs['chatbot_pk']
+        qs = GitRepoSync.objects.filter(chatBot__company=self.request.user.company)
+        if chatbot_id:
+            qs = qs.filter(chatBot__id=chatbot_id)
+        return qs
+    
+    def create(self, request, *args, **kwargs):
+        chatbot = self.get_chatbot()
+        data = request.data.copy()
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save(chatBot=chatbot)
+        return Response(self.get_serializer(obj).data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=['post'])
+    def sync_now(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        if sync.chatBot.company != request.user.company:
+            raise PermissionDenied("You cannot sync a repo for a chatbot outside your company")
+        
+        count = run_github_sync(sync)
+        return Response({"status": f"GitHub sync completed, {count} files processed."}, status=status.HTTP_200_OK)

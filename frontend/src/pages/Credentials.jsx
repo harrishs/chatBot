@@ -7,11 +7,20 @@ function Credentials() {
 	const [credentials, setCredentials] = useState([]);
 	const [email, setEmail] = useState("");
 	const [editId, setEditId] = useState(null);
+	const [gitCreds, setGitCreds] = useState([]);
+	const [newGitCred, setNewGitCred] = useState({
+		name: "",
+		github_username: "",
+		token: "",
+	});
+	const [editGitId, setEditGitId] = useState(null);
 
 	const fetchCredentials = async () => {
 		try {
 			const res = await api.get("/credentials/");
 			setCredentials(res.data);
+			const gitRes = await api.get("/gitCredentials/");
+			setGitCreds(gitRes.data);
 		} catch (err) {
 			console.error("Error fetching credentials:", err);
 		}
@@ -69,8 +78,11 @@ function Credentials() {
 
 	return (
 		<div style={{ padding: "2rem" }}>
-			<h2>{editId ? "Edit API Credential" : "Create a New API Credential"}</h2>
-
+			<h2>
+				{editId
+					? "Edit Atlassian API Credential"
+					: "Create a New Atlassian API Credential"}
+			</h2>
 			<form onSubmit={handleSubmit} style={{ marginBottom: "2rem" }}>
 				<div>
 					<label>Name (Label for this key):</label>
@@ -119,8 +131,52 @@ function Credentials() {
 					</button>
 				)}
 			</form>
+			<h2>
+				{editGitId
+					? "Edit Github Credential"
+					: "Create a New Github Credential"}
+			</h2>
+			<form
+				onSubmit={async (e) => {
+					e.preventDefault();
+					if (editGitId) {
+						await api.put(`/gitCredentials/${editGitId}/`, newGitCred);
+						setEditGitId(null);
+					} else {
+						await api.post("/gitCredentials/", newGitCred);
+					}
+					setNewGitCred({ name: "", github_username: "", token: "" });
+					setGitCreds((await api.get("/gitCredentials/")).data);
+				}}
+			>
+				<input
+					placeholder="Name"
+					value={newGitCred.name}
+					onChange={(e) =>
+						setNewGitCred({ ...newGitCred, name: e.target.value })
+					}
+				/>
+				<input
+					placeholder="GitHub Username"
+					value={newGitCred.github_username}
+					onChange={(e) =>
+						setNewGitCred({ ...newGitCred, github_username: e.target.value })
+					}
+				/>
+				<input
+					placeholder="Token"
+					type="password"
+					value={newGitCred.token}
+					onChange={(e) =>
+						setNewGitCred({ ...newGitCred, token: e.target.value })
+					}
+				/>
+				<button type="submit">
+					{editGitId ? "Update Git Credential" : "Add Git Credential"}
+				</button>
+			</form>
 
-			<h3>Existing Credentials</h3>
+			<h3>Existing Atlassian Credentials</h3>
 			<ul>
 				{credentials.map((cred) => (
 					<li key={cred.id}>
@@ -130,6 +186,34 @@ function Credentials() {
 						<button
 							onClick={() => handleDelete(cred.id)}
 							style={{ marginLeft: "1rem" }}
+						>
+							Delete
+						</button>
+					</li>
+				))}
+			</ul>
+			<h3>Existing Github Credentials</h3>
+			<ul>
+				{gitCreds.map((cred) => (
+					<li key={cred.id}>
+						{cred.name} ({cred.github_username})
+						<button
+							onClick={() => {
+								setEditGitId(cred.id);
+								setNewGitCred({
+									name: cred.name,
+									github_username: cred.github_username,
+									token: "",
+								});
+							}}
+						>
+							Edit
+						</button>
+						<button
+							onClick={async () => {
+								await api.delete(`/gitCredentials/${cred.id}/`);
+								setGitCreds(gitCreds.filter((c) => c.id !== cred.id));
+							}}
 						>
 							Delete
 						</button>

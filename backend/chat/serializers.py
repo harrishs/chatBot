@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential
+from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -99,3 +99,53 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
     class Meta:
         model = ConfluenceSync
         fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
+
+class GitCredentialSerializer(serializers.ModelSerializer):
+    token = serializers.CharField(write_only=True, required=True)
+
+    class Meta:
+        model = GitCredential
+        fields = ['id', 'name', 'github_username', 'token', 'created_at']
+        read_only_fields = ['created_at']
+
+    def create(self, validated_data):
+        raw_token = validated_data.pop('token')
+        from chat.encryption import encrypt_api_key
+        validated_data['_token'] = encrypt_api_key(raw_token)
+        validated_data['company'] = self.context['request'].user.company
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        raw_token = validated_data.pop('token', None)
+        if raw_token:
+            from chat.encryption import encrypt_api_key
+            instance._token = encrypt_api_key(raw_token)
+        return super().update(instance, validated_data)
+    
+class GitCredentialSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GitCredential
+        fields = ['id', 'name', 'github_username']
+
+class GitRepoSyncSerializer(serializers.ModelSerializer):
+    git_credential = GitCredentialSummarySerializer(read_only=True)
+    credential_id = serializers.PrimaryKeyRelatedField(
+        queryset=GitCredential.objects.all(),
+        write_only=True,
+        source='credential',
+    )
+
+    class Meta:
+        model = GitRepoSync
+        fields = ['id', 'repo_full_name', 'branch', 'last_sync_time', 'sync_interval', 'credential', 'credential_id']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        req = self.context.get('request')
+        if req and req.user.is_authenticated:
+            self.fields['credential_id'].queryset = GitCredential.objects.filter(company=req.user.company)
+
+class GitRepoFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GitRepoFile
+        fields = ['id', 'path', 'sha', 'size', 'url', 'content', 'last_updated']
