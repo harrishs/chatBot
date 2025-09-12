@@ -19,17 +19,6 @@ def _is_text_path(path: str) -> bool:
             return True
     return False
 
-def _match_include(path: str, include_globs: str) -> bool:
-    """
-    include_globs: comma-separated list of glob patterns, e.g.:
-      "*.md,docs/**/*.md,src/**/*.ts"
-    if blank -> accept all
-    """
-    if not include_globs.strip():
-        return True
-    patterns = [g.strip() for g in include_globs.split(",") if g.strip()]
-    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
-
 def _gh_headers(token: str):
     return {
         "Accept": "application/vnd.github+json",
@@ -89,8 +78,6 @@ def run_github_sync(sync: GitRepoSync) -> int:
         sha = node['sha']
 
         if not _is_text_path(path):
-            continue
-        if not _match_include(path, sync.include_globs or ""):
             continue
 
         blob = _get_blob(full_name, sha, token)

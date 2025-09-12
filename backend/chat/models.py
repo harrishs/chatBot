@@ -136,6 +136,16 @@ class GitCredential(models.Model):
     def __str__(self):
         return f"{self.name} ({self.github_username})"
     
+    @property
+    def token(self):
+        from chat.encryption import fernet
+        return fernet.decrypt(self._token.encode()).decode()
+
+    @token.setter
+    def token(self, raw_token: str):
+        from chat.encryption import fernet
+        self._token = fernet.encrypt(raw_token.encode()).decode()
+    
 class GitRepoSync(models.Model):
     chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='gitRepoSyncs')
     credential = models.ForeignKey(GitCredential, on_delete=models.PROTECT, related_name='repoSyncs')
