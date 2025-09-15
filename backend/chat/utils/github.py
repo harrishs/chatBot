@@ -109,3 +109,22 @@ def run_github_sync(sync: GitRepoSync) -> int:
     sync.last_sync_time = timezone.now()
     sync.save(update_fields=['last_sync_time'])
     return count
+
+def ingest_github_files(sync: GitRepoSync) -> int:
+    """
+    Ingest files from a GitRepoSync into the document store with embeddings.
+    Returns count of files ingested.
+    """
+    from chat.utils.embeddings import save_document
+
+    files = GitRepoFile.objects.filter(sync=sync)
+    count = 0
+    for f in files:
+        save_document(
+            company=sync.chatBot.company,
+            source="github",
+            source_id=f.id,
+            content=f.content
+        )
+        count += 1
+    return count

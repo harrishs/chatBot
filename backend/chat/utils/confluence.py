@@ -2,6 +2,7 @@ import requests
 from urllib.parse import urlparse, urlencode
 from chat.models import ConfluencePage
 from chat.encryption import decrypt_api_key
+from chat.utils.embeddings import save_document
 
 def get_confluence_base_url(space_url):
     """
@@ -72,3 +73,13 @@ def fetch_confluence_pages(sync):
     except Exception as e:
 
         print(f"Request error while fetching Confluence pages: {e}")
+
+def ingest_confluence_pages(sync):
+    pages = ConfluencePage.objects.filter(sync=sync)
+    for page in pages:
+        save_document(
+            company=sync.chatBot.company,
+            source="confluence",
+            source_id=page.id,
+            content=page.content
+        )

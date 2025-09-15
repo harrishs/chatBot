@@ -17,6 +17,8 @@ from cryptography.fernet import Fernet
 ENCRYPTION_KEY = config('ENCRYPTION_KEY')
 fernet = Fernet(ENCRYPTION_KEY)
 
+OPENAI_API_KEY = config('OPENAI_API_KEY')
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -45,7 +47,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'chat',
-    'corsheaders'
+    'corsheaders',
+    'pgvector.django',
 ]
 
 MIDDLEWARE = [

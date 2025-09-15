@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from chat.encryption import fernet
+from pgvector.django import VectorField
 
 class Company(models.Model):
     name = models.CharField(max_length=255)
@@ -177,3 +178,23 @@ class GitRepoFile(models.Model):
 
     def __str__(self):
         return f"{self.path} ({self.sync.repo_full_name})"
+
+class Document(models.Model):
+    SOURCE_CHOICES = [
+        ('jira', 'Jira'),
+        ('confluence', 'Confluence'),
+        ('github', 'GitHub'),
+    ]
+
+    company = models.ForeignKey("chat.Company", on_delete=models.CASCADE)
+    source = models.CharField(max_length=50, choices=SOURCE_CHOICES)
+    source_id = models.CharField(max_length=200)
+    content = models.TextField()
+    embedding = VectorField(dimensions=1536)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("company", "source", "source_id")
+
+    def __str__(self):
+        return f"Document {self.id} from {self.source} ({self.company.name})"

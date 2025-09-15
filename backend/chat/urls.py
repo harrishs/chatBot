@@ -1,5 +1,5 @@
 from rest_framework.routers import DefaultRouter
-from .views import CompanyViewSet, ChatBotInstanceViewSet, JiraSyncViewSet, ConfluenceSyncViewSet, ChatFeedbackViewSet, UserViewSet, CredentialViewSet, GitRepoSyncViewSet, GitCredentialViewSet
+from .views import CompanyViewSet, ChatBotInstanceViewSet, JiraSyncViewSet, ConfluenceSyncViewSet, ChatFeedbackViewSet, UserViewSet, CredentialViewSet, GitRepoSyncViewSet, GitCredentialViewSet, query_documents
 from django.urls import path, include
 from rest_framework.authtoken.views import obtain_auth_token
 from rest_framework_nested.routers import NestedDefaultRouter
@@ -27,4 +27,5 @@ urlpatterns = [
     path('', include(jira_router.urls)),
     path('', include(confluence_router.urls)),
     path('', include(github_router.urls)),
+    path('company/<int:company_id>/query/', query_documents),
 ]

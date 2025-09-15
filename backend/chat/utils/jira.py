@@ -2,6 +2,7 @@ import requests
 from chat.encryption import decrypt_api_key
 from urllib.parse import urlparse
 from chat.models import JiraIssue, JiraComment
+from chat.utils.embeddings import save_document
 
 def extract_project_key(board_url):
     # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
@@ -76,3 +77,28 @@ def fetch_jira_issues(sync):
                 author=comment["author"]["displayName"]
             )
 
+def ingest_jira_issue(company, issue, comments=None):
+    """
+    Ingest a Jira issue and its comments as documents.
+    """
+    issue_id = issue.issue_key
+    content = f"Issue: {issue.summary}\n\nDescription: {issue.description}"
+    document = save_document(
+        company=company,
+        source="jira_issue",
+        source_id=issue_id,
+        content=content
+    )
+
+    if comments:
+        for comment in comments:
+            comment_id = f"{issue_id}_comment_{comment.id}"
+            comment_content = f"Comment by {comment.author} on {comment.created_at}:\n{comment.content}"
+            save_document(
+                company=company,
+                source="jira_comment",
+                source_id=comment_id,
+                content=comment_content
+            )
+
+    return document

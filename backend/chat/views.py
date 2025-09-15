@@ -1,4 +1,4 @@
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
 from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
@@ -7,10 +7,12 @@ import logging
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view
 from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
 from chat.utils.github import run_github_sync
+from chat.utils.embeddings import search_documents
+
 
 logger = logging.getLogger(__name__)
 
@@ -197,3 +199,19 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         
         count = run_github_sync(sync)
         return Response({"status": f"GitHub sync completed, {count} files processed."}, status=status.HTTP_200_OK)
+    
+@api_view(['POST'])
+def query_documents(request, company_id):
+    """
+    Query embeddings for Jira, Confluence, and GitHub docs.
+
+    Example POST:
+    {
+        "query": "How do I deploy the app with Docker?",
+        "top_k": 5
+    }
+    """
+    query = request.data.get("query")
+    top_k = int(request.data.get("top_k", 5))
+    results = search_documents(company_id, query, top_k)
+    return Response(results)
