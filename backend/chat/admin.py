@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, JiraComment, JiraIssue, ConfluencePage, GitCredential, GitRepoSync, GitRepoFile
+from .models import User, Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, JiraComment, JiraIssue, ConfluencePage, GitCredential, GitRepoSync, GitRepoFile, Document
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
@@ -20,3 +20,4 @@ admin.site.register(ConfluencePage)
 admin.site.register(GitCredential)
 admin.site.register(GitRepoSync)
 admin.site.register(GitRepoFile)
+admin.site.register(Document)

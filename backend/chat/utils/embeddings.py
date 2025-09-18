@@ -30,7 +30,7 @@ def chunk_text(text, max_tokens=1000):
         start = end
     return chunks
 
-def save_document(company, source, source_id, content):
+def save_document(company, chatbot, source, source_id, content):
     """
     Save a document with its embedding to the database.
     """
@@ -42,6 +42,7 @@ def save_document(company, source, source_id, content):
         chunk_id = f"{source_id}_part_{idx}" if len(chunks) > 1 else source_id
         doc, _ = Document.objects.update_or_create(
             company=company,
+            chatbot=chatbot,
             source=source,
             source_id=chunk_id,
             defaults={"content": chunk, "embedding": embedding},
@@ -49,7 +50,7 @@ def save_document(company, source, source_id, content):
         docs.append(doc)
     return docs
 
-def search_documents(company_id, query, top_k=5):
+def search_documents(company_id, chatbot_id, query, top_k=5):
     """
     Semantic search: find the most relevant documents to a query.
     Uses cosine similarity with pgvector.
@@ -66,7 +67,7 @@ def search_documents(company_id, query, top_k=5):
             WHERE company_id = %s
             ORDER BY embedding <=> %s::vector
             LIMIT %s
-        """, [query_embedding, company_id, query_embedding, top_k])
+        """, [query_embedding, company_id, chatbot_id, query_embedding, top_k])
 
         rows = cursor.fetchall()
 

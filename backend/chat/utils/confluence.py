@@ -79,6 +79,7 @@ def ingest_confluence_pages(sync):
     for page in pages:
         save_document(
             company=sync.chatBot.company,
+            chatbot=sync.chatBot,
             source="confluence",
             source_id=page.id,
             content=page.content

@@ -8,6 +8,7 @@ import ChatBots from "./pages/ChatBots.jsx";
 import Credentials from "./pages/Credentials.jsx";
 import Navbar from "./components/NavBar.jsx";
 import ChatBotSyncs from "./pages/ChatBotSyncs.jsx";
+import ChatBotPage from "./pages/ChatBotInterface.jsx";
 
 createRoot(document.getElementById("root")).render(
 	<StrictMode>
@@ -36,6 +37,14 @@ createRoot(document.getElementById("root")).render(
 					element={
 						<ProtectedRoute>
 							<Credentials />
+						</ProtectedRoute>
+					}
+				/>
+				<Route
+					path="/chatbots/:id"
+					element={
+						<ProtectedRoute>
+							<ChatBotPage />
 						</ProtectedRoute>
 					}
 				/>

@@ -77,7 +77,7 @@ def fetch_jira_issues(sync):
                 author=comment["author"]["displayName"]
             )
 
-def ingest_jira_issue(company, issue, comments=None):
+def ingest_jira_issue(company, chatbot, issue, comments=None):
     """
     Ingest a Jira issue and its comments as documents.
     """
@@ -85,6 +85,7 @@ def ingest_jira_issue(company, issue, comments=None):
     content = f"Issue: {issue.summary}\n\nDescription: {issue.description}"
     document = save_document(
         company=company,
+        chatbot=chatbot,
         source="jira_issue",
         source_id=issue_id,
         content=content
@@ -96,6 +97,7 @@ def ingest_jira_issue(company, issue, comments=None):
             comment_content = f"Comment by {comment.author} on {comment.created_at}:\n{comment.content}"
             save_document(
                 company=company,
+                chatbot=chatbot,
                 source="jira_comment",
                 source_id=comment_id,
                 content=comment_content

@@ -122,6 +122,7 @@ def ingest_github_files(sync: GitRepoSync) -> int:
     for f in files:
         save_document(
             company=sync.chatBot.company,
+            chatbot=sync.chatBot,
             source="github",
             source_id=f.id,
             content=f.content

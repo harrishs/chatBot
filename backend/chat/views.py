@@ -12,6 +12,7 @@ from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
 from chat.utils.github import run_github_sync
 from chat.utils.embeddings import search_documents
+from chat.utils.rag import generate_answer
 
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,7 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         return Response({"status": f"GitHub sync completed, {count} files processed."}, status=status.HTTP_200_OK)
     
 @api_view(['POST'])
-def query_documents(request, company_id):
+def query_documents(request, chatbot_id):
     """
     Query embeddings for Jira, Confluence, and GitHub docs.
 
@@ -212,6 +213,36 @@ def query_documents(request, company_id):
     }
     """
     query = request.data.get("query")
+    company_id = request.user.company_id
     top_k = int(request.data.get("top_k", 5))
-    results = search_documents(company_id, query, top_k)
-    return Response(results)
+    if not query:
+        return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        results = search_documents(company_id, chatbot_id, query, top_k)
+        return Response(results)
+    except Exception as e:
+        logger.error(f"Error querying documents: {e}")
+        return Response({"error": "Failed to query documents"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+def chat_with_bot(request, chatbot_id):
+    """
+    Chat endpoint using RAG.
+
+    Example POST:
+    {
+        "query": "How do I deploy the app with Docker?"
+    }
+    """
+    query = request.data.get("query")
+    company_id = request.user.company_id
+    if not query:
+        return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        response = generate_answer(company_id, chatbot_id, query, top_k=5)
+        return Response(response)
+    except Exception as e:
+        logger.error(f"Error generating answer: {e}")
+        return Response({"error": "Failed to generate answer"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
