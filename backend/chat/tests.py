@@ -10,8 +10,19 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from chat.models import ChatBotInstance, Company, Document, Credential, JiraSync, ConfluenceSync
+from chat.models import (
+    ChatBotInstance,
+    Company,
+    Document,
+    Credential,
+    JiraSync,
+    ConfluenceSync,
+    JiraIssue,
+    JiraComment,
+)
 from chat.utils.embeddings import search_documents
+from chat.utils.jira import ingest_jira_issue
+from django.utils import timezone
 
 
 User = get_user_model()
@@ -36,7 +47,7 @@ class SearchDocumentsTestCase(TestCase):
         self.primary_document = Document.objects.create(
             company=self.company,
             chatbot=self.primary_chatbot,
-            source="jira",
+            source="jira_issue",
             source_id="DOC-1",
             content="Primary chatbot document",
             embedding=self.matching_embedding,
@@ -44,7 +55,7 @@ class SearchDocumentsTestCase(TestCase):
         self.primary_document_additional = Document.objects.create(
             company=self.company,
             chatbot=self.primary_chatbot,
-            source="jira",
+            source="jira_issue",
             source_id="DOC-2",
             content="Another document for the primary chatbot",
             embedding=self.alt_embedding,
@@ -52,7 +63,7 @@ class SearchDocumentsTestCase(TestCase):
         self.secondary_document = Document.objects.create(
             company=self.company,
             chatbot=self.secondary_chatbot,
-            source="jira",
+            source="jira_issue",
             source_id="DOC-3",
             content="Secondary chatbot document",
             embedding=self.secondary_embedding,
@@ -86,6 +97,58 @@ class SearchDocumentsTestCase(TestCase):
         )
 
         self.assertNotIn(self.secondary_document.id, result_ids)
+
+
+class JiraIngestionSourceTests(TestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Ingestion Co")
+        self.chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="Ingestion Bot",
+        )
+        self.sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+        )
+        self.issue = JiraIssue.objects.create(
+            sync=self.sync,
+            issue_key="TEST-1",
+            summary="Sample issue",
+            description="Issue description",
+            status="To Do",
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        self.comment = JiraComment.objects.create(
+            issue=self.issue,
+            author="Commenter",
+            content="A helpful comment",
+            created_at=timezone.now(),
+        )
+
+    @patch("chat.utils.embeddings.embed_text", return_value=[0.1] * 1536)
+    def test_ingest_jira_issue_uses_canonical_sources(self, mock_embed_text):
+        ingest_jira_issue(
+            company=self.company,
+            chatbot=self.chatbot,
+            issue=self.issue,
+            comments=[self.comment],
+        )
+
+        documents = Document.objects.filter(company=self.company, chatbot=self.chatbot)
+
+        self.assertEqual(documents.count(), 2)
+        sources = {(doc.source, doc.source_id) for doc in documents}
+        expected_comment_id = f"{self.issue.issue_key}_comment_{self.comment.id}"
+        self.assertSetEqual(
+            sources,
+            {
+                ("jira_issue", self.issue.issue_key),
+                ("jira_comment", expected_comment_id),
+            },
+        )
+
+        self.assertEqual(mock_embed_text.call_count, 2)
 
 
 class SyncCredentialPermissionTests(TestCase):
