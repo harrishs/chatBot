@@ -104,6 +104,13 @@ class CompanyPermissionsTestCase(APITestCase):
         self.admin.is_staff = True
         self.admin.save()
 
+        self.superuser = User.objects.create_superuser(
+            username="super-alpha",
+            password="password123",
+            email="super-alpha@example.com",
+            company=self.company,
+        )
+
     def authenticate(self, user=None):
         self.client.force_authenticate(user=user or self.user)
 
@@ -145,3 +152,23 @@ class CompanyPermissionsTestCase(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['name'], 'Updated Name')
         self.assertEqual(response.data['website'], 'https://new.example')
+
+    def test_admin_cannot_update_other_company(self):
+        self.authenticate(self.admin)
+        url = reverse('company-detail', args=[self.other_company.id])
+        response = self.client.patch(url, {'name': 'Other Name'}, format='json')
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_superuser_can_update_restricted_fields(self):
+        self.authenticate(self.superuser)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(
+            url,
+            {'name': 'Super Updated', 'website': 'https://super.example'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['name'], 'Super Updated')
+        self.assertEqual(response.data['website'], 'https://super.example')
