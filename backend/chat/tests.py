@@ -1,9 +1,16 @@
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 from chat.models import ChatBotInstance, Company, Document
 from chat.utils.embeddings import search_documents
+
+
+User = get_user_model()
 
 
 class SearchDocumentsTestCase(TestCase):
@@ -75,3 +82,63 @@ class SearchDocumentsTestCase(TestCase):
         )
 
         self.assertNotIn(self.secondary_document.id, result_ids)
+
+
+class CompanyPermissionsTests(APITestCase):
+    def setUp(self):
+        self.company_one = Company.objects.create(name="Company One")
+        self.company_two = Company.objects.create(name="Company Two")
+
+        self.regular_user = User.objects.create_user(
+            username="regular",
+            email="regular@example.com",
+            password="password123",
+            company=self.company_one,
+        )
+
+        self.admin_user = User.objects.create_user(
+            username="admin",
+            email="admin@example.com",
+            password="password123",
+            company=self.company_one,
+            is_staff=True,
+        )
+
+    def test_non_admin_list_is_limited_to_their_company(self):
+        self.client.force_authenticate(user=self.regular_user)
+
+        response = self.client.get(reverse("company-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.company_one.id)
+
+    def test_non_admin_cannot_update_other_company(self):
+        self.client.force_authenticate(user=self.regular_user)
+
+        url = reverse("company-detail", args=[self.company_two.id])
+        response = self.client.patch(url, {"name": "Updated"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.company_two.refresh_from_db()
+        self.assertEqual(self.company_two.name, "Company Two")
+
+    def test_non_admin_cannot_update_their_own_company(self):
+        self.client.force_authenticate(user=self.regular_user)
+
+        url = reverse("company-detail", args=[self.company_one.id])
+        response = self.client.patch(url, {"name": "Updated"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.company_one.refresh_from_db()
+        self.assertEqual(self.company_one.name, "Company One")
+
+    def test_admin_can_update_any_company(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        url = reverse("company-detail", args=[self.company_two.id])
+        response = self.client.patch(url, {"name": "Updated"}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.company_two.refresh_from_db()
+        self.assertEqual(self.company_two.name, "Updated")

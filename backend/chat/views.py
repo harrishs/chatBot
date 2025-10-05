@@ -4,7 +4,6 @@ from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeed
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
 import logging
-from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action, api_view
@@ -20,6 +19,16 @@ logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
+
+class IsAdminOrReadOnly(permissions.BasePermission):
+    """Allow non-admin users to perform read-only requests."""
+
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return request.user and request.user.is_authenticated
+        return bool(request.user and request.user.is_staff)
+
+
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -31,8 +40,21 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.save(company=self.request.user.company)
 
 class CompanyViewSet(viewsets.ModelViewSet):
-    queryset = Company.objects.all()
     serializer_class = CompanySerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return Company.objects.none()
+
+        if user.is_staff or user.is_superuser:
+            return Company.objects.all()
+
+        if user.company_id:
+            return Company.objects.filter(id=user.company_id)
+
+        return Company.objects.none()
 
 class CredentialViewSet(viewsets.ModelViewSet):
     serializer_class = CredentialSerializer
