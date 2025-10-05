@@ -1,0 +1,23 @@
+harrishs.ca, www.harrishs.ca {
+  encode zstd gzip
+
+  # Optional: provide an email for ACME/Let's Encrypt notices
+  # acme_ca https://acme-v02.api.letsencrypt.org/directory
+  # email you@example.com
+
+  # Proxy API to Django (Gunicorn) container
+  @api path /api* /admin/* /static/* /media*
+  reverse_proxy @api backend:8000
+
+  # Everything else: serve the built frontend (Nginx) container
+  reverse_proxy frontend:80
+
+  # Basic hardening
+  header {
+    # CORS/frames/etc. adjust as needed
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "SAMEORIGIN"
+    Referrer-Policy "no-referrer-when-downgrade"
+  }
+}

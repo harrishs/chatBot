@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  # Public entrypoint. Handles HTTP->HTTPS, certs, and routing.
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: frontend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.production
+    environment:
+      - ALLOWED_HOSTS=harrishs.ca,www.harrishs.ca
+      - CSRF_TRUSTED_ORIGINS=https://harrishs.ca,https://www.harrishs.ca
+      - DEBUG=False
+    depends_on:
+      - db
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: chat_db
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

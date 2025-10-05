@@ -1,0 +1,45 @@
+# Use official Python image as base
+FROM python:3.11-slim
+
+# Env: keep your originals
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Set working directory
+WORKDIR /app
+
+# --- System dependencies (psycopg2 etc.) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc netcat-openbsd curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# (Optional) psql client if you actually use it in health checks/scripts
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy wait script if you still want it (we’ll leave it available)
+COPY wait-for-it.sh /wait-for-it.sh
+RUN chmod +x /wait-for-it.sh
+
+# --- Python deps ---
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir gunicorn
+
+# Copy the rest of your app
+COPY . .
+
+# (Optional) If you use Django staticfiles (admin, etc.), bake them in:
+# ENV DJANGO_SETTINGS_MODULE=core.settings
+# RUN python manage.py collectstatic --noinput
+
+# Expose the app port inside the container (Caddy reverse-proxies to this)
+EXPOSE 8000
+
+# Healthcheck: simple TCP probe (adjust if you prefer an HTTP endpoint)
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD nc -z localhost 8000 || exit 1
+
+# Default CMD: run Gunicorn (NOT runserver)
+# Tune workers/timeout as needed. 2-4 workers are fine for small EC2 instances.
+CMD ["gunicorn", "core.wsgi:application", "-b", "0.0.0.0:8000", "--workers", "3", "--timeout", "60"]
