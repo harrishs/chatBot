@@ -198,6 +198,21 @@ class SyncCredentialPermissionTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_jira_sync_create_accepts_valid_payload(self):
+        url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/"
+        payload = {
+            'board_url': 'https://example.atlassian.net',
+            'credential_id': self.tenant_credential.id,
+            'sync_interval': JiraSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(JiraSync.objects.filter(chatBot=self.chatbot).count(), 1)
+        sync = JiraSync.objects.get(chatBot=self.chatbot)
+        self.assertEqual(sync.credential, self.tenant_credential)
+
     def test_jira_sync_update_rejects_foreign_credential(self):
         sync = JiraSync.objects.create(
             chatBot=self.chatbot,
@@ -225,6 +240,21 @@ class SyncCredentialPermissionTests(TestCase):
         response = self.client.post(url, payload, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_confluence_sync_create_accepts_valid_payload(self):
+        url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/"
+        payload = {
+            'space_url': 'https://example.atlassian.net/wiki',
+            'credential_id': self.tenant_credential.id,
+            'sync_interval': ConfluenceSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ConfluenceSync.objects.filter(chatBot=self.chatbot).count(), 1)
+        sync = ConfluenceSync.objects.get(chatBot=self.chatbot)
+        self.assertEqual(sync.credential, self.tenant_credential)
 
     def test_confluence_sync_update_rejects_foreign_credential(self):
         sync = ConfluenceSync.objects.create(
