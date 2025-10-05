@@ -1,18 +1,42 @@
-from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, permissions, status
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
-from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
-from django.contrib.auth import get_user_model
 import logging
-from rest_framework import viewsets, permissions, status
+
+from django.shortcuts import get_object_or_404
+
+from django.contrib.auth import get_user_model
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action, api_view
+from rest_framework import viewsets, permissions, status
 from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
 from chat.utils.github import run_github_sync
 from chat.utils.embeddings import search_documents
 from chat.utils.rag import generate_answer
+from .permissions import IsTenantAdminOrReadOnly
+from .models import (
+    Company,
+    ChatBotInstance,
+    JiraSync,
+    ConfluenceSync,
+    ChatFeedback,
+    Credential,
+    GitCredential,
+    GitRepoSync,
+    GitRepoFile,
+)
+from .serializers import (
+    CompanySerializer,
+    ChatBotInstanceSerializer,
+    JiraSyncSerializer,
+    ConfluenceSyncSerializer,
+    ChatFeedbackSerializer,
+    UserSerializer,
+    CredentialSerializer,
+    GitCredentialSerializer,
+    GitCredentialSummarySerializer,
+    GitRepoSyncSerializer,
+    GitRepoFileSerializer,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +57,13 @@ class UserViewSet(viewsets.ModelViewSet):
 class CompanyViewSet(viewsets.ModelViewSet):
     queryset = Company.objects.all()
     serializer_class = CompanySerializer
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdminOrReadOnly]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated or not user.company_id:
+            return Company.objects.none()
+        return Company.objects.filter(id=user.company_id)
 
 class CredentialViewSet(viewsets.ModelViewSet):
     serializer_class = CredentialSerializer

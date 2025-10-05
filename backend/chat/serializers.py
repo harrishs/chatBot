@@ -25,6 +25,21 @@ class CompanySerializer(serializers.ModelSerializer):
         model = Company
         fields = '__all__'
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated and not (
+            getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)
+        ):
+            restricted_fields = {'name', 'website'}
+            modified_fields = restricted_fields.intersection(attrs.keys())
+            if modified_fields:
+                errors = {
+                    field: "You do not have permission to modify this field."
+                    for field in modified_fields
+                }
+                raise serializers.ValidationError(errors)
+        return super().validate(attrs)
+
 class CredentialSerializer(serializers.ModelSerializer):
     api_key = serializers.CharField(write_only=True, required=True)
 

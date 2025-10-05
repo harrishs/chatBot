@@ -1,9 +1,15 @@
 from unittest.mock import patch
 
 from django.test import TestCase
+from rest_framework.test import APITestCase
+from django.urls import reverse
+from django.contrib.auth import get_user_model
 
 from chat.models import ChatBotInstance, Company, Document
 from chat.utils.embeddings import search_documents
+
+
+User = get_user_model()
 
 
 class SearchDocumentsTestCase(TestCase):
@@ -75,3 +81,67 @@ class SearchDocumentsTestCase(TestCase):
         )
 
         self.assertNotIn(self.secondary_document.id, result_ids)
+
+
+class CompanyPermissionsTestCase(APITestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Alpha", website="https://alpha.example")
+        self.other_company = Company.objects.create(name="Beta", website="https://beta.example")
+
+        self.user = User.objects.create_user(
+            username="user-alpha",
+            password="password123",
+            email="user-alpha@example.com",
+            company=self.company,
+        )
+
+        self.admin = User.objects.create_user(
+            username="admin-alpha",
+            password="password123",
+            email="admin-alpha@example.com",
+            company=self.company,
+        )
+        self.admin.is_staff = True
+        self.admin.save()
+
+    def authenticate(self, user=None):
+        self.client.force_authenticate(user=user or self.user)
+
+    def test_list_scoped_to_user_company(self):
+        self.authenticate()
+        url = reverse('company-list')
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], self.company.id)
+
+    def test_retrieve_other_company_not_found(self):
+        self.authenticate()
+        url = reverse('company-detail', args=[self.other_company.id])
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_non_admin_cannot_update_other_company(self):
+        self.authenticate()
+        url = reverse('company-detail', args=[self.other_company.id])
+        response = self.client.patch(url, {'name': 'New Name'}, format='json')
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_non_admin_cannot_update_own_company(self):
+        self.authenticate()
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'name': 'New Name'}, format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_update_company_details(self):
+        self.authenticate(self.admin)
+        url = reverse('company-detail', args=[self.company.id])
+        response = self.client.patch(url, {'name': 'Updated Name', 'website': 'https://new.example'}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['name'], 'Updated Name')
+        self.assertEqual(response.data['website'], 'https://new.example')
