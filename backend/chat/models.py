@@ -181,7 +181,8 @@ class GitRepoFile(models.Model):
 
 class Document(models.Model):
     SOURCE_CHOICES = [
-        ('jira', 'Jira'),
+        ('jira_issue', 'Jira Issue'),
+        ('jira_comment', 'Jira Comment'),
         ('confluence', 'Confluence'),
         ('github', 'GitHub'),
     ]
