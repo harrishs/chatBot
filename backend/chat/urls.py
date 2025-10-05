@@ -5,7 +5,7 @@ from rest_framework.authtoken.views import obtain_auth_token
 from rest_framework_nested.routers import NestedDefaultRouter
 
 router = DefaultRouter()
-router.register(r'companies', CompanyViewSet)
+router.register(r'companies', CompanyViewSet, basename='company')
 router.register(r'chatBots', ChatBotInstanceViewSet, basename='chatBot')
 router.register(r'feedbacks', ChatFeedbackViewSet, basename='feedback')
 router.register(r'users', UserViewSet, basename='user')
