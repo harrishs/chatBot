@@ -2,11 +2,15 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from chat.models import ChatBotInstance, Company, Document
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from chat.models import ChatBotInstance, Company, Document, Credential, JiraSync, ConfluenceSync
 from chat.utils.embeddings import search_documents
 
 
@@ -84,6 +88,96 @@ class SearchDocumentsTestCase(TestCase):
         self.assertNotIn(self.secondary_document.id, result_ids)
 
 
+class SyncCredentialPermissionTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+
+        self.company = Company.objects.create(name="Tenant A")
+        self.other_company = Company.objects.create(name="Tenant B")
+        self.user = User.objects.create_user(
+            username="tenant-user",
+            email="tenant@example.com",
+            password="password123",
+            company=self.company,
+        )
+
+        self.chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="Support Bot",
+        )
+
+        self.tenant_credential = Credential.objects.create(
+            company=self.company,
+            name="Tenant Cred",
+            email="tenant-cred@example.com",
+            _api_key="dummy",
+        )
+
+        self.foreign_credential = Credential.objects.create(
+            company=self.other_company,
+            name="Foreign Cred",
+            email="foreign-cred@example.com",
+            _api_key="dummy",
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_jira_sync_create_rejects_foreign_credential(self):
+        url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/"
+        payload = {
+            'board_url': 'https://example.atlassian.net',
+            'credential_id': self.foreign_credential.id,
+            'sync_interval': JiraSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_jira_sync_update_rejects_foreign_credential(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url='https://example.atlassian.net',
+            credential=self.tenant_credential,
+        )
+        url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/{sync.id}/"
+
+        response = self.client.patch(
+            url,
+            {'credential_id': self.foreign_credential.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_confluence_sync_create_rejects_foreign_credential(self):
+        url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/"
+        payload = {
+            'space_url': 'https://example.atlassian.net/wiki',
+            'credential_id': self.foreign_credential.id,
+            'sync_interval': ConfluenceSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_confluence_sync_update_rejects_foreign_credential(self):
+        sync = ConfluenceSync.objects.create(
+            chatBot=self.chatbot,
+            space_url='https://example.atlassian.net/wiki',
+            credential=self.tenant_credential,
+        )
+        url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/{sync.id}/"
+
+        response = self.client.patch(
+            url,
+            {'credential_id': self.foreign_credential.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 class CompanyPermissionsTests(APITestCase):
     def setUp(self):
         self.company_one = Company.objects.create(name="Company One")
