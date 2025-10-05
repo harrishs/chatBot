@@ -1,8 +1,8 @@
-from decouple import config
+from django.conf import settings
 from cryptography.fernet import Fernet
 
-ENCRYPTION_KEY = config('ENCRYPTION_KEY')
-fernet = Fernet(ENCRYPTION_KEY)
+
+fernet = Fernet(settings.ENCRYPTION_KEY)
 
 def encrypt_api_key(api_key: str) -> str:
     """

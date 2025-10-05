@@ -83,6 +83,14 @@ class JiraSyncSerializer(serializers.ModelSerializer):
         model = JiraSync
         fields = ['id', 'board_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            self.fields['credential_id'].queryset = Credential.objects.filter(
+                company=request.user.company
+            )
+
 class ConfluenceSyncSerializer(serializers.ModelSerializer):
     credential = CredentialSummarySerializer(read_only=True)
     credential_id = serializers.PrimaryKeyRelatedField(
@@ -95,6 +103,14 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
     class Meta:
         model = ConfluenceSync
         fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            self.fields['credential_id'].queryset = Credential.objects.filter(
+                company=request.user.company
+            )
 
 class GitCredentialSerializer(serializers.ModelSerializer):
     token = serializers.CharField(write_only=True, required=True)

@@ -2,7 +2,9 @@ import openai
 from django.conf import settings
 from chat.models import Document
 from django.db.models import ExpressionWrapper, F, FloatField, Value
+from django.db import connection
 from pgvector.django import CosineDistance
+from math import sqrt
 
 def embed_text(text: str) -> list:
     """
@@ -60,9 +62,38 @@ def search_documents(company_id, chatbot_id, query, top_k=5):
     query_embedding = embed_text(query)
 
     # 2. Run similarity search using pgvector helpers
+    base_queryset = Document.objects.filter(company_id=company_id, chatbot_id=chatbot_id)
+
+    if connection.vendor == 'sqlite':
+        def cosine_similarity(vec1, vec2):
+            dot = sum(a * b for a, b in zip(vec1, vec2))
+            norm1 = sqrt(sum(a * a for a in vec1))
+            norm2 = sqrt(sum(b * b for b in vec2))
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return dot / (norm1 * norm2)
+
+        scored_docs = [
+            (doc, cosine_similarity(doc.embedding, query_embedding))
+            for doc in base_queryset
+        ]
+        scored_docs.sort(key=lambda item: item[1], reverse=True)
+        rows = [doc for doc, _ in scored_docs[:top_k]]
+        scores = {doc.id: score for doc, score in scored_docs}
+
+        return [
+            {
+                "id": doc.id,
+                "source": doc.source,
+                "source_id": doc.source_id,
+                "content": doc.content,
+                "similarity": float(scores.get(doc.id)),
+            }
+            for doc in rows
+        ]
+
     queryset = (
-        Document.objects
-        .filter(company_id=company_id, chatbot_id=chatbot_id)
+        base_queryset
         .annotate(distance=CosineDistance("embedding", query_embedding))
         .annotate(
             similarity=ExpressionWrapper(
@@ -75,12 +106,11 @@ def search_documents(company_id, chatbot_id, query, top_k=5):
 
     rows = queryset[:top_k]
 
-    # 3. Return structured results
     return [
         {
             "id": doc.id,
-            "source": doc.source,       # "jira", "confluence", or "github"
-            "source_id": doc.source_id,    # ticket id, page id, file path
+            "source": doc.source,
+            "source_id": doc.source_id,
             "content": doc.content,
             "similarity": float(doc.similarity) if doc.similarity is not None else None,
         }

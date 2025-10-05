@@ -70,6 +70,20 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     lookup_field = 'id'
     lookup_url_kwarg = 'pk'
 
+    def _validate_credential(self, credential):
+        if credential and credential.company != self.request.user.company:
+            raise PermissionDenied("You cannot use credentials for a different company")
+
+    def _validate_request_credential_id(self, data):
+        credential_id = data.get('credential_id') or data.get('credential')
+        if not credential_id:
+            return
+        try:
+            credential = Credential.objects.get(pk=credential_id)
+        except Credential.DoesNotExist:
+            return
+        self._validate_credential(credential)
+
     def get_queryset(self):
         chatbot_id = self.kwargs['chatbot_pk']
         if not chatbot_id:
@@ -89,14 +103,27 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         mutable_data = request.data.copy()
         mutable_data['chatBot'] = chatBot.id
 
+        self._validate_request_credential_id(mutable_data)
+
         serializer = self.get_serializer(data=mutable_data)
 
         if not serializer.is_valid():
             logger.error("Validation error: %s", serializer.errors)
             return Response(serializer.errors, status=400)
 
+        self._validate_credential(serializer.validated_data.get('credential'))
         serializer.save(chatBot=chatBot)
         return Response(serializer.data, status=201)
+
+    def update(self, request, *args, **kwargs):
+        self._validate_request_credential_id(request.data)
+        return super().update(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        self._validate_credential(serializer.validated_data.get('credential'))
+        if serializer.instance.chatBot.company != self.request.user.company:
+            raise PermissionDenied("You cannot modify a sync outside your company")
+        serializer.save()
     
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
@@ -107,6 +134,20 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def _validate_credential(self, credential):
+        if credential and credential.company != self.request.user.company:
+            raise PermissionDenied("You cannot use credentials for a different company")
+
+    def _validate_request_credential_id(self, data):
+        credential_id = data.get('credential_id') or data.get('credential')
+        if not credential_id:
+            return
+        try:
+            credential = Credential.objects.get(pk=credential_id)
+        except Credential.DoesNotExist:
+            return
+        self._validate_credential(credential)
 
     def get_queryset(self):
         chatbot_id = self.kwargs['chatbot_pk']
@@ -129,14 +170,27 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         mutable_data = request.data.copy()
         mutable_data['chatBot'] = chatBot.id
 
+        self._validate_request_credential_id(mutable_data)
+
         serializer = self.get_serializer(data=mutable_data)
 
         if not serializer.is_valid():
             logger.error("ConfluenceSync Validation Error: %s", serializer.errors)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        self._validate_credential(serializer.validated_data.get('credential'))
         serializer.save(chatBot=chatBot)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        self._validate_request_credential_id(request.data)
+        return super().update(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        self._validate_credential(serializer.validated_data.get('credential'))
+        if serializer.instance.chatBot.company != self.request.user.company:
+            raise PermissionDenied("You cannot modify a sync outside your company")
+        serializer.save()
     
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
