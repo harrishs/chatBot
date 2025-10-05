@@ -121,21 +121,15 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         except ChatBotInstance.DoesNotExist:
             raise PermissionDenied("Invalid chatbot or not in your company")
 
-        # Include the chatbot in the validated data
-        mutable_data = request.data.copy()
-        mutable_data['chatBot'] = chatBot.id
+        self._validate_request_credential_id(request.data)
 
-        self._validate_request_credential_id(mutable_data)
-
-        serializer = self.get_serializer(data=mutable_data)
-
-        if not serializer.is_valid():
-            logger.error("Validation error: %s", serializer.errors)
-            return Response(serializer.errors, status=400)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         self._validate_credential(serializer.validated_data.get('credential'))
-        serializer.save(chatBot=chatBot)
-        return Response(serializer.data, status=201)
+        sync = serializer.save(chatBot=chatBot)
+        response_serializer = self.get_serializer(sync)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         self._validate_request_credential_id(request.data)
@@ -188,21 +182,15 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         except ChatBotInstance.DoesNotExist:
             raise PermissionDenied("Invalid chatbot or not in your company")
 
-        # Inject chatBot into the data explicitly
-        mutable_data = request.data.copy()
-        mutable_data['chatBot'] = chatBot.id
+        self._validate_request_credential_id(request.data)
 
-        self._validate_request_credential_id(mutable_data)
-
-        serializer = self.get_serializer(data=mutable_data)
-
-        if not serializer.is_valid():
-            logger.error("ConfluenceSync Validation Error: %s", serializer.errors)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
         self._validate_credential(serializer.validated_data.get('credential'))
-        serializer.save(chatBot=chatBot)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        sync = serializer.save(chatBot=chatBot)
+        response_serializer = self.get_serializer(sync)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         self._validate_request_credential_id(request.data)
