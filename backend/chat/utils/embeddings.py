@@ -1,4 +1,9 @@
-import openai
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
 from django.conf import settings
 from chat.models import Document
 from django.db.models import ExpressionWrapper, F, FloatField, Value
@@ -6,20 +11,39 @@ from django.db import connection
 from pgvector.django import CosineDistance
 from math import sqrt
 
+
+_shared_openai_client = None
+
+
+def get_openai_client() -> OpenAI:
+    """Return a shared OpenAI client instance configured from settings."""
+    global _shared_openai_client
+
+    if _shared_openai_client is None:
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
+
+        _shared_openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+    return _shared_openai_client
+
 def embed_text(text: str) -> list:
     """
     Generate a vector embedding for a given text using OpenAI.
     Returns a list of floats (embedding vector).
     """
-    if not settings.OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
+    client = get_openai_client()
 
-    openai.api_key = settings.OPENAI_API_KEY
+    try:
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text,
+        )
+    except RateLimitError as exc:
+        raise RuntimeError("OpenAI rate limit exceeded while generating embeddings") from exc
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise RuntimeError("Failed to reach OpenAI while generating embeddings") from exc
 
-    response = openai.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
     return response.data[0].embedding
 
 def chunk_text(text, max_tokens=1000):

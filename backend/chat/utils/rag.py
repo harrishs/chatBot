@@ -1,6 +1,7 @@
-import openai
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
-from chat.utils.embeddings import search_documents
+from chat.utils.embeddings import get_openai_client, search_documents
+
 
 def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5) -> dict:
     """
@@ -11,8 +12,6 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
     """
     if not settings.OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
-
-    openai.api_key = settings.OPENAI_API_KEY
 
     # 1. Retrieve context
     docs = search_documents(company_id, chatbot_id, query, top_k)
@@ -31,15 +30,21 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
     )
     user_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
-    #4. Call OpenAI
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-    )
+    client = get_openai_client()
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+    except RateLimitError as exc:
+        raise RuntimeError("OpenAI rate limit exceeded while generating an answer") from exc
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise RuntimeError("Failed to reach OpenAI while generating an answer") from exc
 
     answer = response.choices[0].message.content
     return {"answer": answer, "sources": docs}
