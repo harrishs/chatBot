@@ -198,6 +198,7 @@ class SyncCredentialPermissionTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+
     def test_jira_sync_create_accepts_valid_payload(self):
         url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/"
         payload = {
@@ -329,3 +330,39 @@ class CompanyPermissionsTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.company_two.refresh_from_db()
         self.assertEqual(self.company_two.name, "Updated")
+
+
+class UserPasswordUpdateTests(APITestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Password Co")
+        self.user = User.objects.create_user(
+            username="password-user",
+            email="password@example.com",
+            password="initialPass123",
+            company=self.company,
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_patch_user_password_hashes_and_allows_login(self):
+        url = reverse('user-detail', args=[self.user.id])
+        response = self.client.patch(
+            url,
+            {'password': 'UpdatedPass456'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('UpdatedPass456'))
+        self.assertNotEqual(self.user.password, 'UpdatedPass456')
+
+        login_client = APIClient()
+        login_response = login_client.post(
+            '/api/login/',
+            {'username': self.user.username, 'password': 'UpdatedPass456'},
+            format='json',
+        )
+
+        self.assertEqual(login_response.status_code, status.HTTP_200_OK)
+        self.assertIn('token', login_response.data)
