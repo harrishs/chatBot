@@ -1,12 +1,35 @@
-# React + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This directory contains the React + Vite single-page application for the ChatBot project.
 
-Currently, two official plugins are available:
+## Environment variables
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+The application reads Vite environment variables at build and dev-server time. Variables must be prefixed with `VITE_` to be exposed to the browser.
 
-## Expanding the ESLint configuration
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | `/api` | Base URL used by Axios when issuing API calls. Set this when the frontend is served from a different origin than the backend. |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+When the frontend and backend are deployed on the same origin (for example behind the production Caddy reverse proxy), you can rely on the default `/api` path. For local development where the Django API is served from `localhost:8000`, set `VITE_API_BASE_URL=http://localhost:8000/api` before starting Vite.
+
+## Local development
+
+```bash
+npm install
+VITE_API_BASE_URL=http://localhost:8000/api npm run dev
+```
+
+This starts the Vite dev server on [http://localhost:5173](http://localhost:5173). The environment variable can also be stored in a `.env.local` file if you prefer.
+
+## Production build
+
+```bash
+npm install
+VITE_API_BASE_URL=https://example.com/api npm run build
+```
+
+The resulting static assets in `dist/` can be served by any static web server. Remember that the value baked into the build cannot be changed at runtime, so set `VITE_API_BASE_URL` appropriately before building.
+
+## Docker builds
+
+Both `Dockerfile` (development) and `Dockerfile.prod` (production) accept a `VITE_API_BASE_URL` build argument. This allows Compose or other orchestrators to pass the correct API endpoint while keeping `/api` as the default fallback.

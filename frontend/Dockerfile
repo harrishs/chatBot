@@ -1,6 +1,9 @@
 # Use Node.js base image
 FROM node:20-alpine
 
+ARG VITE_API_BASE_URL=/api
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+
 # Set working directory
 WORKDIR /app
 
