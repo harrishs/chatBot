@@ -5,7 +5,7 @@ from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncS
 from django.contrib.auth import get_user_model
 import logging
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
 from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
@@ -214,12 +214,37 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ChatFeedback.objects.filter(chatBot__company=self.request.user.company)
-    
-    def perform_create(self, serializer):
-        chatBot = serializer.validated_data['chatBot']
+
+    def _get_chatbot_from_request(self):
+        request = self.request
+        chat_bot_id = (
+            request.data.get('chatBot')
+            or request.data.get('chatbot')
+            or request.query_params.get('chatBot')
+            or request.query_params.get('chatbot')
+        )
+
+        if not chat_bot_id:
+            raise ValidationError({'chatBot': ['This field is required.']})
+
+        try:
+            return ChatBotInstance.objects.get(pk=chat_bot_id)
+        except ChatBotInstance.DoesNotExist:
+            raise NotFound('Chatbot not found.')
+
+    def create(self, request, *args, **kwargs):
+        chatBot = self._get_chatbot_from_request()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer, chatBot=chatBot)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_create(self, serializer, chatBot=None):
+        chatBot = chatBot or self._get_chatbot_from_request()
         if chatBot.company != self.request.user.company:
-            raise PermissionError("You cannot create feedback for a chatbot outside your company")
-        serializer.save()
+            raise PermissionDenied("You cannot create feedback for a chatbot outside your company")
+        serializer.save(chatBot=chatBot)
 
 class GitCredentialViewSet(viewsets.ModelViewSet):
     serializer_class = GitCredentialSerializer
