@@ -2,14 +2,15 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
+ARG VITE_API_BASE_URL=/api
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+
 # Copy package files and install deps (ci = clean, reproducible)
 COPY package*.json ./
 RUN npm ci
 
 # Copy the rest of the source and build
 COPY . .
-# If you reference Vite env vars, set them here (build-time):
-# ENV VITE_API_BASE_URL=/api
 RUN npm run build
 
 # --- Stage 2: Serve static files with Nginx ---
