@@ -33,9 +33,10 @@ services:
     env_file:
       - ./backend/.env.production
     environment:
+      - ENV=production
       - ALLOWED_HOSTS=harrishs.ca,www.harrishs.ca
       - CSRF_TRUSTED_ORIGINS=https://harrishs.ca,https://www.harrishs.ca
-      - DEBUG=False
+      - CORS_ALLOWED_ORIGINS=https://harrishs.ca,https://www.harrishs.ca
     depends_on:
       - db
 

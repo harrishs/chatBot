@@ -11,11 +11,16 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
-from decouple import config
+
+from decouple import Csv, config
+from django.core.exceptions import ImproperlyConfigured
 from cryptography.fernet import Fernet
 
-ENCRYPTION_KEY = config('ENCRYPTION_KEY', default=Fernet.generate_key().decode())
-fernet = Fernet(ENCRYPTION_KEY)
+
+ENCRYPTION_KEY = config('ENCRYPTION_KEY', default=None)
+if not ENCRYPTION_KEY:
+    raise ImproperlyConfigured('ENCRYPTION_KEY is required')
+fernet = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)
 
 OPENAI_API_KEY = config('OPENAI_API_KEY', default='test-openai-key')
 
@@ -30,9 +35,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('DJANGO_SECRET_KEY', default='test-secret-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = []
+ENV = config('ENV', default='development')
+
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
 
 
 # Application definition
@@ -160,9 +168,9 @@ REST_FRAMEWORK = {
     ],
 }
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-]
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
+CORS_ALLOWED_ORIGIN_REGEXES = config('CORS_ALLOWED_ORIGIN_REGEXES', default='', cast=Csv())
 
 LOGGING = {
     'version': 1,
@@ -174,6 +182,6 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',
+        'level': config('LOG_LEVEL', default='INFO'),
     },
 }
