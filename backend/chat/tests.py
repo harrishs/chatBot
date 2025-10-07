@@ -64,7 +64,7 @@ class SearchDocumentsTestCase(TestCase):
             company=self.company,
             chatbot=self.secondary_chatbot,
             source="jira_issue",
-            source_id="DOC-3",
+            source_id="DOC-1",
             content="Secondary chatbot document",
             embedding=self.secondary_embedding,
         )
@@ -149,6 +149,59 @@ class JiraIngestionSourceTests(TestCase):
         )
 
         self.assertEqual(mock_embed_text.call_count, 2)
+
+    @patch("chat.utils.embeddings.embed_text", return_value=[0.1] * 1536)
+    def test_ingest_jira_issue_allows_duplicate_source_ids_across_chatbots(self, mock_embed_text):
+        other_chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="Second Bot",
+        )
+        other_sync = JiraSync.objects.create(
+            chatBot=other_chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/2",
+        )
+        other_issue = JiraIssue.objects.create(
+            sync=other_sync,
+            issue_key=self.issue.issue_key,
+            summary="Sample issue",
+            description="Issue description",
+            status="To Do",
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        other_comment = JiraComment.objects.create(
+            issue=other_issue,
+            author="Second Commenter",
+            content="Another helpful comment",
+            created_at=timezone.now(),
+        )
+
+        ingest_jira_issue(
+            company=self.company,
+            chatbot=self.chatbot,
+            issue=self.issue,
+            comments=[self.comment],
+        )
+
+        ingest_jira_issue(
+            company=self.company,
+            chatbot=other_chatbot,
+            issue=other_issue,
+            comments=[other_comment],
+        )
+
+        jira_issue_documents = Document.objects.filter(
+            company=self.company,
+            source="jira_issue",
+            source_id=self.issue.issue_key,
+        )
+
+        self.assertEqual(jira_issue_documents.count(), 2)
+
+        chatbot_ids = set(jira_issue_documents.values_list("chatbot_id", flat=True))
+        self.assertSetEqual(chatbot_ids, {self.chatbot.id, other_chatbot.id})
+
+        self.assertEqual(mock_embed_text.call_count, 4)
 
 
 class SyncCredentialPermissionTests(TestCase):
