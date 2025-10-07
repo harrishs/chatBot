@@ -35,7 +35,8 @@ services:
     depends_on:
       - db
     environment:
-      - Debug=1
+      - DEBUG=True
+      - ENV=development
 
   frontend:
     build:
