@@ -196,7 +196,7 @@ class Document(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("company", "source", "source_id")
+        unique_together = ("company", "chatbot", "source", "source_id")
 
     def __str__(self):
         return f"Document {self.id} from {self.source} ({self.company.name})"
