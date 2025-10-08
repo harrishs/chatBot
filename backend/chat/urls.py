@@ -1,8 +1,24 @@
+from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-from .views import CompanyViewSet, ChatBotInstanceViewSet, JiraSyncViewSet, ConfluenceSyncViewSet, ChatFeedbackViewSet, UserViewSet, CredentialViewSet, GitRepoSyncViewSet, GitCredentialViewSet, query_documents, chat_with_bot
-from django.urls import path, include
-from rest_framework.authtoken.views import obtain_auth_token
 from rest_framework_nested.routers import NestedDefaultRouter
+
+from .views import (
+    ChatBotInstanceViewSet,
+    ChatFeedbackViewSet,
+    CSRFTokenView,
+    CompanyViewSet,
+    ConfluenceSyncViewSet,
+    CredentialViewSet,
+    GitCredentialViewSet,
+    GitRepoSyncViewSet,
+    JiraSyncViewSet,
+    LoginView,
+    LogoutView,
+    SessionView,
+    UserViewSet,
+    chat_with_bot,
+    query_documents,
+)
 
 router = DefaultRouter()
 router.register(r'companies', CompanyViewSet, basename='company')
@@ -22,11 +38,14 @@ github_router = NestedDefaultRouter(router, r'chatBots', lookup='chatbot')
 github_router.register(r'gitRepoSyncs', GitRepoSyncViewSet, basename='gitRepoSync')
 
 urlpatterns = [
-    path('login/', obtain_auth_token, name='api_token_auth'),
+    path('login/', LoginView.as_view(), name='api-login'),
+    path('logout/', LogoutView.as_view(), name='api-logout'),
+    path('auth/session/', SessionView.as_view(), name='api-session'),
+    path('csrf/', CSRFTokenView.as_view(), name='api-csrf'),
     path('', include(router.urls)),
     path('', include(jira_router.urls)),
     path('', include(confluence_router.urls)),
     path('', include(github_router.urls)),
     path('chatbots/<int:chatbot_id>/query/', query_documents),
-    path('chatbots/<int:chatbot_id>/chat/', chat_with_bot)
+    path('chatbots/<int:chatbot_id>/chat/', chat_with_bot),
 ]

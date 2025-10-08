@@ -9,54 +9,57 @@ import Credentials from "./pages/Credentials.jsx";
 import Navbar from "./components/NavBar.jsx";
 import ChatBotSyncs from "./pages/ChatBotSyncs.jsx";
 import ChatBotPage from "./pages/ChatBotInterface.jsx";
+import { AuthProvider } from "./context/AuthContext.jsx";
 
 createRoot(document.getElementById("root")).render(
-	<StrictMode>
-		<BrowserRouter>
-			<Navbar />
-			<Routes>
-				<Route path="/login" element={<Login />} />
-				<Route
-					path="/"
-					element={
-						<ProtectedRoute>
-							<App />
-						</ProtectedRoute>
-					}
-				/>
-				<Route
-					path="/chatbots"
-					element={
-						<ProtectedRoute>
-							<ChatBots />
-						</ProtectedRoute>
-					}
-				/>
-				<Route
-					path="/credentials"
-					element={
-						<ProtectedRoute>
-							<Credentials />
-						</ProtectedRoute>
-					}
-				/>
-				<Route
-					path="/chatbots/:id"
-					element={
-						<ProtectedRoute>
-							<ChatBotPage />
-						</ProtectedRoute>
-					}
-				/>
-				<Route
-					path="/chatbots/:chatBotId/syncs"
-					element={
-						<ProtectedRoute>
-							<ChatBotSyncs />
-						</ProtectedRoute>
-					}
-				/>
-			</Routes>
-		</BrowserRouter>
-	</StrictMode>
+        <StrictMode>
+                <AuthProvider>
+                        <BrowserRouter>
+                                <Navbar />
+                                <Routes>
+                                        <Route path="/login" element={<Login />} />
+                                        <Route
+                                                path="/"
+                                                element={
+                                                        <ProtectedRoute>
+                                                                <App />
+                                                        </ProtectedRoute>
+                                                }
+                                        />
+                                        <Route
+                                                path="/chatbots"
+                                                element={
+                                                        <ProtectedRoute>
+                                                                <ChatBots />
+                                                        </ProtectedRoute>
+                                                }
+                                        />
+                                        <Route
+                                                path="/credentials"
+                                                element={
+                                                        <ProtectedRoute>
+                                                                <Credentials />
+                                                        </ProtectedRoute>
+                                                }
+                                        />
+                                        <Route
+                                                path="/chatbots/:id"
+                                                element={
+                                                        <ProtectedRoute>
+                                                                <ChatBotPage />
+                                                        </ProtectedRoute>
+                                                }
+                                        />
+                                        <Route
+                                                path="/chatbots/:chatBotId/syncs"
+                                                element={
+                                                        <ProtectedRoute>
+                                                                <ChatBotSyncs />
+                                                        </ProtectedRoute>
+                                                }
+                                        />
+                                </Routes>
+                        </BrowserRouter>
+                </AuthProvider>
+        </StrictMode>,
 );
