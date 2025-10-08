@@ -7,11 +7,16 @@ import logging
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
+from rest_framework.views import APIView
 from chat.utils.jira import fetch_jira_issues
 from chat.utils.confluence import fetch_confluence_pages
 from chat.utils.github import run_github_sync
 from chat.utils.embeddings import search_documents
 from chat.utils.rag import generate_answer
+from django.contrib.auth import authenticate, login, logout
+from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 
 
 logger = logging.getLogger(__name__)
@@ -35,9 +40,67 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return User.objects.filter(company=self.request.user.company)
-    
+
     def perform_create(self, serializer):
         serializer.save(company=self.request.user.company)
+
+
+class LoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response({'detail': 'Username and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = authenticate(request, username=username, password=password)
+
+        if not user:
+            return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        login(request, user)
+        serializer = UserSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        logout(request)
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        response.delete_cookie(
+            settings.SESSION_COOKIE_NAME,
+            samesite=getattr(settings, 'SESSION_COOKIE_SAMESITE', 'Lax'),
+            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+        )
+        return response
+
+
+class SessionView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {'detail': 'Authentication credentials were not provided.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@method_decorator(ensure_csrf_cookie, name='dispatch')
+class CSRFTokenView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return Response({'detail': 'CSRF cookie set.'}, status=status.HTTP_200_OK)
 
 class CompanyViewSet(viewsets.ModelViewSet):
     serializer_class = CompanySerializer

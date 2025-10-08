@@ -418,4 +418,6 @@ class UserPasswordUpdateTests(APITestCase):
         )
 
         self.assertEqual(login_response.status_code, status.HTTP_200_OK)
-        self.assertIn('token', login_response.data)
+        session_cookie = login_response.cookies.get('sessionid')
+        self.assertIsNotNone(session_cookie)
+        self.assertTrue(session_cookie['httponly'])
