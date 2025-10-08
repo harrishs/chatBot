@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
+from rest_framework.authentication import SessionAuthentication
 from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
@@ -16,7 +17,7 @@ from chat.utils.rag import generate_answer
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,10 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.save(company=self.request.user.company)
 
 
+@method_decorator(csrf_protect, name='dispatch')
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
-    authentication_classes = []
+    authentication_classes = [SessionAuthentication]
 
     def post(self, request):
         username = request.data.get('username')
