@@ -1,5 +1,5 @@
 import logging
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -30,6 +30,70 @@ def _build_session() -> requests.Session:
 
 
 _SESSION = _build_session()
+
+
+def extract_plain_text_from_adf(document: Union[dict, list, None]) -> str:
+    """Return the concatenated plain text representation of an ADF document.
+
+    Atlassian comments are provided using the Atlassian Document Format (ADF),
+    which is a nested structure of nodes.  Each node can contain child nodes in
+    the ``content`` key, and leaf nodes may define ``text`` or represent a hard
+    line break.  The structure is permissive and nodes or keys may be missing, so
+    the helper needs to be defensive and never raise when traversing the
+    document.
+    """
+
+    def _maybe_add_newline(parts: List[str]) -> None:
+        if not parts:
+            return
+        if not parts[-1].endswith("\n"):
+            parts.append("\n")
+
+    def _walk(node: Union[dict, list, None], parts: List[str]) -> None:
+        if node is None:
+            return
+
+        if isinstance(node, list):
+            for child in node:
+                _walk(child, parts)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        node_type = node.get("type")
+
+        if node_type == "text":
+            text = node.get("text")
+            if text:
+                parts.append(text)
+            return
+
+        if node_type == "emoji":
+            short_name = node.get("attrs", {}).get("shortName")
+            if short_name:
+                parts.append(short_name)
+            return
+
+        if node_type == "hardBreak":
+            parts.append("\n")
+            return
+
+        content = node.get("content")
+        if not content:
+            return
+
+        before_len = len(parts)
+        for child in content:
+            _walk(child, parts)
+
+        if node_type in {"paragraph", "heading", "blockquote", "listItem"}:
+            if len(parts) > before_len:
+                _maybe_add_newline(parts)
+
+    collected: List[str] = []
+    _walk(document, collected)
+    return "".join(collected).strip()
 
 def extract_project_key(board_url):
     # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
@@ -98,11 +162,10 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
         comments = fetch_comments(base_url, issue_key, api_key, email)
         synced_comments: List[JiraComment] = []
         for comment in comments:
+            plain_text = extract_plain_text_from_adf(comment.get("body"))
             comment_obj, _ = JiraComment.objects.update_or_create(
                 issue=jira_issue,
-                content=comment["body"]["content"][0]["content"][0]["text"]
-                    if "content" in comment["body"] and comment["body"]["content"]
-                    else "Unknown content",
+                content=plain_text if plain_text else "Unknown content",
                 created_at=comment["created"],
                 author=comment["author"]["displayName"]
             )
