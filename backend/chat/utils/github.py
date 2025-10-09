@@ -3,6 +3,8 @@ import logging
 from typing import Iterable, List, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime, timezone
 from urllib.parse import quote
 from chat.encryption import decrypt_api_key
@@ -17,6 +19,25 @@ MAX_FILE_BYTES = 500_000  # ~500KB per file to avoid massive blobs in DB
 
 
 logger = logging.getLogger(__name__)
+
+_REQUEST_TIMEOUT = (5, 30)
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
 
 def _is_text_path(path: str) -> bool:
     for ext in TEXT_EXTS:
@@ -34,19 +55,19 @@ def _gh_headers(token: str):
 def _list_tree(full_name: str, branch: str, token: str):
     # Get the SHA for the branch head
     ref_url = f"{GITHUB_API}/repos/{full_name}/git/refs/heads/{quote(branch)}"
-    r = requests.get(ref_url, headers=_gh_headers(token))
+    r = _SESSION.get(ref_url, headers=_gh_headers(token), timeout=_REQUEST_TIMEOUT)
     r.raise_for_status()
     commit_sha = r.json()['object']['sha']
 
     # Get full recursive tree
     tree_url = f"{GITHUB_API}/repos/{full_name}/git/trees/{commit_sha}?recursive=1"
-    t = requests.get(tree_url, headers=_gh_headers(token))
+    t = _SESSION.get(tree_url, headers=_gh_headers(token), timeout=_REQUEST_TIMEOUT)
     t.raise_for_status()
     return t.json().get('tree', [])
 
 def _get_blob(full_name: str, sha: str, token: str) -> bytes:
     blob_url = f"{GITHUB_API}/repos/{full_name}/git/blobs/{sha}"
-    b = requests.get(blob_url, headers=_gh_headers(token))
+    b = _SESSION.get(blob_url, headers=_gh_headers(token), timeout=_REQUEST_TIMEOUT)
     b.raise_for_status()
     data = b.json()
     if data.get('encoding') == 'base64':
@@ -57,7 +78,7 @@ def _get_blob(full_name: str, sha: str, token: str) -> bytes:
 def _get_last_commit_date(full_name: str, path: str, token: str) -> datetime:
     # fetch last commit touching this file (lightweight; can be rate-limited)
     commits_url = f"{GITHUB_API}/repos/{full_name}/commits?path={quote(path)}&per_page=1"
-    c = requests.get(commits_url, headers=_gh_headers(token))
+    c = _SESSION.get(commits_url, headers=_gh_headers(token), timeout=_REQUEST_TIMEOUT)
     if c.status_code == 200 and isinstance(c.json(), list) and c.json():
         iso = c.json()[0]['commit']['committer']['date']  # ISO string
         return datetime.fromisoformat(iso.replace('Z', '+00:00'))
