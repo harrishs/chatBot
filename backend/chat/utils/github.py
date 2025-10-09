@@ -1,5 +1,7 @@
 import base64
-import fnmatch
+import logging
+from typing import Iterable, List, Tuple
+
 import requests
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -12,6 +14,9 @@ GITHUB_API = "https://api.github.com"
 TEXT_EXTS = {'.md', '.mdx', '.txt', '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yml', '.yaml', '.toml', '.ini', '.css', '.scss', '.html', '.c', '.cc', '.cpp', '.h', '.go', '.rs'}
 
 MAX_FILE_BYTES = 500_000  # ~500KB per file to avoid massive blobs in DB
+
+
+logger = logging.getLogger(__name__)
 
 def _is_text_path(path: str) -> bool:
     for ext in TEXT_EXTS:
@@ -59,7 +64,7 @@ def _get_last_commit_date(full_name: str, path: str, token: str) -> datetime:
     # fallback to now
     return datetime.now(timezone.utc)
 
-def run_github_sync(sync: GitRepoSync) -> int:
+def run_github_sync(sync: GitRepoSync) -> Tuple[int, int]:
     """
     Pull textual files from a repo branch and store/update GitRepoFile rows.
     Returns count of files indexed.
@@ -70,6 +75,7 @@ def run_github_sync(sync: GitRepoSync) -> int:
     branch = sync.branch
 
     tree = _list_tree(full_name, branch, token)
+    processed_files: List[GitRepoFile] = []
     count = 0
     for node in tree:
         if node.get('type') != 'blob':
@@ -103,29 +109,38 @@ def run_github_sync(sync: GitRepoSync) -> int:
             }
         )
         count += 1
+        processed_files.append(obj)
 
     # bump last_sync_time
     from django.utils import timezone
     sync.last_sync_time = timezone.now()
     sync.save(update_fields=['last_sync_time'])
-    return count
 
-def ingest_github_files(sync: GitRepoSync) -> int:
+    documents_ingested = ingest_github_files(sync, files=processed_files)
+    logger.info(
+        "Synced %s GitHub files and ingested %s documents for sync %s",
+        count,
+        documents_ingested,
+        sync.pk,
+    )
+    return count, documents_ingested
+
+def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None = None) -> int:
     """
     Ingest files from a GitRepoSync into the document store with embeddings.
     Returns count of files ingested.
     """
     from chat.utils.embeddings import save_document
 
-    files = GitRepoFile.objects.filter(sync=sync)
+    files_to_ingest = list(files) if files is not None else list(GitRepoFile.objects.filter(sync=sync))
     count = 0
-    for f in files:
-        save_document(
+    for f in files_to_ingest:
+        docs = save_document(
             company=sync.chatBot.company,
             chatbot=sync.chatBot,
             source="github",
             source_id=f.id,
             content=f.content
         )
-        count += 1
+        count += len(docs)
     return count

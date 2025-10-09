@@ -1,8 +1,14 @@
+import logging
+from typing import Iterable, List, Tuple
+
 import requests
 from chat.encryption import decrypt_api_key
 from urllib.parse import urlparse
-from chat.models import JiraIssue, JiraComment
+from chat.models import JiraIssue, JiraComment, JiraSync
 from chat.utils.embeddings import save_document
+
+
+logger = logging.getLogger(__name__)
 
 def extract_project_key(board_url):
     # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
@@ -32,7 +38,7 @@ def fetch_comments(base_url, issue_key, api_key, email):
 
     return response.json().get("comments", [])
 
-def fetch_jira_issues(sync):
+def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]]]:
     api_key = decrypt_api_key(sync.credential._api_key)
     project_key = extract_project_key(sync.board_url)
     base_url = get_base_domain(sync.board_url)
@@ -47,6 +53,8 @@ def fetch_jira_issues(sync):
     response = requests.get(issue_url, headers=headers, auth=auth)
     response.raise_for_status()
     issues = response.json().get("issues", [])
+
+    processed: List[Tuple[JiraIssue, List[JiraComment]]] = []
 
     for issue in issues:
         issue_key = issue["key"]
@@ -67,8 +75,9 @@ def fetch_jira_issues(sync):
 
         # Fetch and save comments
         comments = fetch_comments(base_url, issue_key, api_key, email)
+        synced_comments: List[JiraComment] = []
         for comment in comments:
-            JiraComment.objects.update_or_create(
+            comment_obj, _ = JiraComment.objects.update_or_create(
                 issue=jira_issue,
                 content=comment["body"]["content"][0]["content"][0]["text"]
                     if "content" in comment["body"] and comment["body"]["content"]
@@ -76,31 +85,47 @@ def fetch_jira_issues(sync):
                 created_at=comment["created"],
                 author=comment["author"]["displayName"]
             )
+            synced_comments.append(comment_obj)
 
-def ingest_jira_issue(company, chatbot, issue, comments=None):
+        processed.append((jira_issue, synced_comments))
+
+    if processed:
+        from django.utils import timezone
+
+        sync.last_sync_time = timezone.now()
+        sync.save(update_fields=["last_sync_time"])
+
+    logger.info("Fetched %s Jira issues for sync %s", len(processed), sync.pk)
+
+    return processed
+
+def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[JiraComment] | None = None):
     """
     Ingest a Jira issue and its comments as documents.
     """
     issue_id = issue.issue_key
     content = f"Issue: {issue.summary}\n\nDescription: {issue.description}"
-    document = save_document(
+    documents = []
+    issue_documents = save_document(
         company=company,
         chatbot=chatbot,
         source="jira_issue",
         source_id=issue_id,
         content=content
     )
+    documents.extend(issue_documents)
 
     if comments:
         for comment in comments:
             comment_id = f"{issue_id}_comment_{comment.id}"
             comment_content = f"Comment by {comment.author} on {comment.created_at}:\n{comment.content}"
-            save_document(
+            comment_documents = save_document(
                 company=company,
                 chatbot=chatbot,
                 source="jira_comment",
                 source_id=comment_id,
                 content=comment_content
             )
+            documents.extend(comment_documents)
 
-    return document
+    return documents

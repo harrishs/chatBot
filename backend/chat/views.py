@@ -9,8 +9,8 @@ from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
 from rest_framework.views import APIView
-from chat.utils.jira import fetch_jira_issues
-from chat.utils.confluence import fetch_confluence_pages
+from chat.utils.jira import fetch_jira_issues, ingest_jira_issue
+from chat.utils.confluence import fetch_confluence_pages, ingest_confluence_pages
 from chat.utils.github import run_github_sync
 from chat.utils.embeddings import search_documents
 from chat.utils.rag import generate_answer
@@ -209,8 +209,31 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        fetch_jira_issues(sync)
-        return Response({"status": "Jira sync initiated"}, status=status.HTTP_200_OK)
+        try:
+            issues_with_comments = fetch_jira_issues(sync)
+            documents_created = 0
+            for issue, comments in issues_with_comments:
+                docs = ingest_jira_issue(
+                    company=sync.chatBot.company,
+                    chatbot=sync.chatBot,
+                    issue=issue,
+                    comments=comments,
+                )
+                documents_created += len(docs)
+        except Exception:
+            logger.exception("Failed to sync Jira for sync %s", sync.pk)
+            return Response(
+                {"detail": "Failed to sync Jira."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "status": f"Jira sync completed, {len(issues_with_comments)} issues processed.",
+                "documents_ingested": documents_created,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
@@ -270,8 +293,23 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        fetch_confluence_pages(sync)
-        return Response({"status": "Confluence sync initiated"}, status=status.HTTP_200_OK)
+        try:
+            pages = fetch_confluence_pages(sync)
+            documents_created = ingest_confluence_pages(sync, pages=pages)
+        except Exception:
+            logger.exception("Failed to sync Confluence for sync %s", sync.pk)
+            return Response(
+                {"detail": "Failed to sync Confluence."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "status": f"Confluence sync completed, {len(pages)} pages processed.",
+                "documents_ingested": documents_created,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class ChatFeedbackViewSet(viewsets.ModelViewSet):
     serializer_class = ChatFeedbackSerializer
@@ -352,8 +390,22 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         if sync.chatBot.company != request.user.company:
             raise PermissionDenied("You cannot sync a repo for a chatbot outside your company")
         
-        count = run_github_sync(sync)
-        return Response({"status": f"GitHub sync completed, {count} files processed."}, status=status.HTTP_200_OK)
+        try:
+            files_processed, documents_ingested = run_github_sync(sync)
+        except Exception:
+            logger.exception("Failed to sync GitHub for sync %s", sync.pk)
+            return Response(
+                {"detail": "Failed to sync GitHub."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "status": f"GitHub sync completed, {files_processed} files processed.",
+                "documents_ingested": documents_ingested,
+            },
+            status=status.HTTP_200_OK,
+        )
     
 @api_view(['POST'])
 def query_documents(request, chatbot_id):
