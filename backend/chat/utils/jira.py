@@ -2,6 +2,8 @@ import logging
 from typing import Iterable, List, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from chat.encryption import decrypt_api_key
 from urllib.parse import urlparse
 from chat.models import JiraIssue, JiraComment, JiraSync
@@ -9,6 +11,25 @@ from chat.utils.embeddings import save_document
 
 
 logger = logging.getLogger(__name__)
+
+_REQUEST_TIMEOUT = (5, 30)
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
 
 def extract_project_key(board_url):
     # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
@@ -18,8 +39,8 @@ def extract_project_key(board_url):
         if len(parts) > 1:
             project_part = parts[1].split("/")[0]
             return project_part
-    except Exception as e:
-        print(f"Error extracting project key: {e}")
+    except Exception:
+        logger.exception("Error extracting project key from Jira board URL")
     return ""  # fallback if parsing fails
 
 def get_base_domain(board_url):
@@ -33,7 +54,7 @@ def fetch_comments(base_url, issue_key, api_key, email):
         "Accept": "application/json"
     }
 
-    response = requests.get(url, headers=headers, auth=auth)
+    response = _SESSION.get(url, headers=headers, auth=auth, timeout=_REQUEST_TIMEOUT)
     response.raise_for_status()
 
     return response.json().get("comments", [])
@@ -50,7 +71,7 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
         "Accept": "application/json"
     }
 
-    response = requests.get(issue_url, headers=headers, auth=auth)
+    response = _SESSION.get(issue_url, headers=headers, auth=auth, timeout=_REQUEST_TIMEOUT)
     response.raise_for_status()
     issues = response.json().get("issues", [])
 

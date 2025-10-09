@@ -2,6 +2,8 @@ import logging
 from typing import Iterable, List
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from urllib.parse import urlparse, urlencode
 from chat.models import ConfluencePage, ConfluenceSync
 from chat.encryption import decrypt_api_key
@@ -9,6 +11,25 @@ from chat.utils.embeddings import save_document
 
 
 logger = logging.getLogger(__name__)
+
+_REQUEST_TIMEOUT = (5, 30)
+
+
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SESSION = _build_session()
 
 def get_confluence_base_url(space_url):
     """
@@ -29,8 +50,8 @@ def extract_space_key(space_url):
         parts = space_url.split("/spaces/")
         if len(parts) > 1:
             return parts[1].split("/")[0]
-    except Exception as e:
-        print(f"Error extracting space key: {e}")
+    except Exception:
+        logger.exception("Error extracting Confluence space key from URL")
     return ""
 
 def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
@@ -58,7 +79,7 @@ def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
     }
 
     try:
-        response = requests.get(url, auth=auth, headers=headers)
+        response = _SESSION.get(url, auth=auth, headers=headers, timeout=_REQUEST_TIMEOUT)
         response.raise_for_status()
     except requests.RequestException:
         logger.exception("Failed to fetch Confluence pages for sync %s", sync.pk)

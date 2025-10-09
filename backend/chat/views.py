@@ -5,6 +5,7 @@ from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeed
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
 import logging
+import requests
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
@@ -220,6 +221,18 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
                     comments=comments,
                 )
                 documents_created += len(docs)
+        except requests.Timeout:
+            logger.exception("Jira sync timed out for sync %s", sync.pk)
+            return Response(
+                {"detail": "Jira sync timed out while contacting the Jira API. Please try again shortly."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.exception("Jira sync failed due to network error for sync %s", sync.pk)
+            return Response(
+                {"detail": f"Jira sync failed due to a network error: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         except Exception:
             logger.exception("Failed to sync Jira for sync %s", sync.pk)
             return Response(
@@ -296,6 +309,18 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         try:
             pages = fetch_confluence_pages(sync)
             documents_created = ingest_confluence_pages(sync, pages=pages)
+        except requests.Timeout:
+            logger.exception("Confluence sync timed out for sync %s", sync.pk)
+            return Response(
+                {"detail": "Confluence sync timed out while contacting the Confluence API. Please try again."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.exception("Confluence sync failed due to network error for sync %s", sync.pk)
+            return Response(
+                {"detail": f"Confluence sync failed due to a network error: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         except Exception:
             logger.exception("Failed to sync Confluence for sync %s", sync.pk)
             return Response(
@@ -392,6 +417,18 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         
         try:
             files_processed, documents_ingested = run_github_sync(sync)
+        except requests.Timeout:
+            logger.exception("GitHub sync timed out for sync %s", sync.pk)
+            return Response(
+                {"detail": "GitHub sync timed out while contacting the GitHub API. Please try again."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.exception("GitHub sync failed due to network error for sync %s", sync.pk)
+            return Response(
+                {"detail": f"GitHub sync failed due to a network error: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         except Exception:
             logger.exception("Failed to sync GitHub for sync %s", sync.pk)
             return Response(
