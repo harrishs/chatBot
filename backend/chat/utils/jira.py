@@ -118,10 +118,43 @@ def fetch_comments(base_url, issue_key, api_key, email):
         "Accept": "application/json"
     }
 
-    response = _SESSION.get(url, headers=headers, auth=auth, timeout=_REQUEST_TIMEOUT)
-    response.raise_for_status()
+    comments: List[dict] = []
+    start_at = 0
+    max_results = 50
 
-    return response.json().get("comments", [])
+    while True:
+        params = {"startAt": start_at, "maxResults": max_results}
+        response = _SESSION.get(
+            url,
+            headers=headers,
+            auth=auth,
+            timeout=_REQUEST_TIMEOUT,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        batch = payload.get("comments", []) or []
+        if not batch:
+            break
+
+        comments.extend(batch)
+
+        if payload.get("isLast") is True:
+            break
+
+        batch_size = len(batch)
+        total = payload.get("total")
+        max_results = payload.get("maxResults", max_results) or max_results
+        start_at = payload.get("startAt", start_at) + batch_size
+
+        if total is not None and len(comments) >= total:
+            break
+
+        if batch_size < max_results:
+            break
+
+    return comments
 
 def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]]]:
     api_key = decrypt_api_key(sync.credential._api_key)
@@ -129,15 +162,50 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
     base_url = get_base_domain(sync.board_url)
     email = sync.credential.email
 
-    issue_url = f"{base_url}/rest/api/3/search?jql=project={project_key}"
+    issue_url = f"{base_url}/rest/api/3/search"
     auth = requests.auth.HTTPBasicAuth(email, api_key)
     headers = {
         "Accept": "application/json"
     }
 
-    response = _SESSION.get(issue_url, headers=headers, auth=auth, timeout=_REQUEST_TIMEOUT)
-    response.raise_for_status()
-    issues = response.json().get("issues", [])
+    issues: List[dict] = []
+    start_at = 0
+    max_results = 50
+
+    while True:
+        params = {
+            "jql": f"project={project_key}",
+            "startAt": start_at,
+            "maxResults": max_results,
+        }
+        response = _SESSION.get(
+            issue_url,
+            headers=headers,
+            auth=auth,
+            timeout=_REQUEST_TIMEOUT,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        batch = payload.get("issues", []) or []
+        if not batch:
+            break
+
+        issues.extend(batch)
+
+        if payload.get("isLast") is True:
+            break
+
+        batch_size = len(batch)
+        total = payload.get("total")
+        max_results = payload.get("maxResults", max_results) or max_results
+        start_at = payload.get("startAt", start_at) + batch_size
+
+        if total is not None and len(issues) >= total:
+            break
+
+        if batch_size < max_results:
+            break
 
     processed: List[Tuple[JiraIssue, List[JiraComment]]] = []
 
