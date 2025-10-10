@@ -3,6 +3,53 @@ from django.contrib.auth.models import AbstractUser
 from chat.encryption import fernet
 from pgvector.django import VectorField
 
+
+class SyncStatusMixin(models.Model):
+    class Status(models.TextChoices):
+        IDLE = 'idle', 'Idle'
+        QUEUED = 'queued', 'Queued'
+        RUNNING = 'running', 'Running'
+        SUCCEEDED = 'succeeded', 'Succeeded'
+        FAILED = 'failed', 'Failed'
+
+    sync_status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.IDLE,
+    )
+    sync_status_message = models.TextField(blank=True)
+    current_job_id = models.CharField(max_length=255, blank=True, null=True)
+
+    class Meta:
+        abstract = True
+
+
+class SyncJob(models.Model):
+    class JobType(models.TextChoices):
+        JIRA = 'jira', 'Jira'
+        CONFLUENCE = 'confluence', 'Confluence'
+        GIT = 'git', 'Git repository'
+
+    sync_type = models.CharField(max_length=20, choices=JobType.choices)
+    sync_id = models.PositiveIntegerField()
+    status = models.CharField(
+        max_length=20,
+        choices=SyncStatusMixin.Status.choices,
+        default=SyncStatusMixin.Status.QUEUED,
+    )
+    status_message = models.TextField(blank=True)
+    enqueued_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['status', 'enqueued_at']),
+        ]
+
+    def __str__(self):
+        return f"SyncJob({self.get_sync_type_display()} #{self.sync_id})"
+
 class Company(models.Model):
     name = models.CharField(max_length=255)
     website = models.URLField(blank=True)
@@ -52,7 +99,7 @@ class Credential(models.Model):
         self._api_key = f.encrypt(raw_key.encode()).decode()
 
 
-class JiraSync(models.Model):
+class JiraSync(SyncStatusMixin):
     chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='jiraSyncs')
     board_url = models.URLField()
     credential = models.ForeignKey(Credential, on_delete=models.CASCADE, null=True, blank=True)
@@ -69,7 +116,7 @@ class JiraSync(models.Model):
         return f"Jira Sync for {self.chatBot.name} ({self.chatBot.company.name})"
     
 
-class ConfluenceSync(models.Model):
+class ConfluenceSync(SyncStatusMixin):
     chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='confluenceSyncs')
     space_url = models.URLField()
     credential = models.ForeignKey(Credential, on_delete=models.CASCADE, null=True, blank=True)
@@ -147,7 +194,7 @@ class GitCredential(models.Model):
         from chat.encryption import fernet
         self._token = fernet.encrypt(raw_token.encode()).decode()
     
-class GitRepoSync(models.Model):
+class GitRepoSync(SyncStatusMixin):
     chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='gitRepoSyncs')
     credential = models.ForeignKey(GitCredential, on_delete=models.PROTECT, related_name='repoSyncs')
     repo_full_name = models.CharField(max_length=300)
