@@ -14,16 +14,36 @@ logger = logging.getLogger(__name__)
 
 
 def _set_status(sync, status, message, update_last_sync_time=False, job_id: Optional[str] = None):
-    fields = ['sync_status', 'sync_status_message']
-    sync.sync_status = status
-    sync.sync_status_message = message
+    update_kwargs = {
+        'sync_status': status,
+        'sync_status_message': message,
+    }
+    fields_to_set = ['sync_status', 'sync_status_message']
+
     if update_last_sync_time:
-        sync.last_sync_time = timezone.now()
-        fields.append('last_sync_time')
+        now = timezone.now()
+        update_kwargs['last_sync_time'] = now
+        fields_to_set.append('last_sync_time')
     if job_id is not None:
-        sync.current_job_id = job_id
-        fields.append('current_job_id')
-    sync.save(update_fields=fields)
+        update_kwargs['current_job_id'] = job_id
+        fields_to_set.append('current_job_id')
+
+    queryset = type(sync).objects.filter(pk=sync.pk)
+    if job_id is not None:
+        queryset = queryset.filter(current_job_id=job_id)
+
+    updated = queryset.update(**update_kwargs)
+    if not updated:
+        if job_id is not None:
+            logger.debug(
+                "Skipping status update for sync %s and job %s because the current job changed.",
+                sync.pk,
+                job_id,
+            )
+        return
+
+    for field in fields_to_set:
+        setattr(sync, field, update_kwargs[field])
 
 
 def run_jira_sync(sync_id: int, job_id: Optional[str] = None) -> Tuple[int, int]:
