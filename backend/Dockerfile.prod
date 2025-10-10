@@ -1,9 +1,14 @@
 # Use official Python image as base
 FROM python:3.11-slim
 
+ARG ENCRYPTION_KEY
+
 # Env: keep your originals
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DJANGO_SETTINGS_MODULE=core.settings \
+    ENV=production \
+    ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
 # Set working directory
 WORKDIR /app
@@ -30,9 +35,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy the rest of your app
 COPY . .
 
-# (Optional) If you use Django staticfiles (admin, etc.), bake them in:
-# ENV DJANGO_SETTINGS_MODULE=core.settings
-# RUN python manage.py collectstatic --noinput
+# Collect static assets during build so they can be served by Caddy
+RUN python manage.py collectstatic --noinput
 
 # Expose the app port inside the container (Caddy reverse-proxies to this)
 EXPOSE 8000

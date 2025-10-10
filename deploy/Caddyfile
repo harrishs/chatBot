@@ -5,8 +5,14 @@
   # acme_ca https://acme-v02.api.letsencrypt.org/directory
   # email you@example.com
 
-  # Proxy API to Django (Gunicorn) container
-  @api path /api* /admin/* /static/* /media*
+  # Serve collected static files directly from the shared volume
+  handle_path /static/* {
+    root * /srv/staticfiles
+    file_server
+  }
+
+  # Proxy API/Admin/other dynamic requests to Django (Gunicorn) container
+  @api path /api* /admin/* /media*
   reverse_proxy @api backend:8000
 
   # Everything else: serve the built frontend (Nginx) container
