@@ -4,7 +4,7 @@ from typing import Iterable, List
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
 from chat.models import ConfluencePage, ConfluenceSync
 from chat.encryption import decrypt_api_key
 from chat.utils.embeddings import save_document
@@ -109,6 +109,15 @@ def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
                 next_url = next_link
             else:
                 next_url = f"{base_url}/wiki{next_link}" if not next_link.startswith("/wiki") else f"{base_url}{next_link}"
+            parsed_next = urlparse(next_url)
+            next_query = dict(parse_qsl(parsed_next.query, keep_blank_values=True))
+            if "expand" not in next_query and query_params.get("expand"):
+                next_query["expand"] = query_params["expand"]
+            if "cql" not in next_query and query_params.get("cql"):
+                next_query["cql"] = query_params["cql"]
+            if "limit" not in next_query and query_params.get("limit"):
+                next_query["limit"] = query_params["limit"]
+            next_url = urlunparse(parsed_next._replace(query=urlencode(next_query)))
             continue
 
         start = payload.get("start")
