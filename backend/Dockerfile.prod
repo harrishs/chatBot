@@ -1,9 +1,14 @@
 # Use official Python image as base
 FROM python:3.11-slim
 
+ARG ENCRYPTION_KEY
+
 # Env: keep your originals
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DJANGO_SETTINGS_MODULE=core.settings \
+    ENV=production \
+    ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
 # Set working directory
 WORKDIR /app
@@ -30,9 +35,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy the rest of your app
 COPY . .
 
-# (Optional) If you use Django staticfiles (admin, etc.), bake them in:
-# ENV DJANGO_SETTINGS_MODULE=core.settings
-# RUN python manage.py collectstatic --noinput
+# Runtime entrypoint keeps the shared static volume up to date
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Expose the app port inside the container (Caddy reverse-proxies to this)
 EXPOSE 8000
@@ -42,4 +47,5 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD nc -z localhost 8000 || 
 
 # Default CMD: run Gunicorn (NOT runserver)
 # Tune workers/timeout as needed. 2-4 workers are fine for small EC2 instances.
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gunicorn", "core.wsgi:application", "-b", "0.0.0.0:8000", "--workers", "3", "--timeout", "60"]
