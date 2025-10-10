@@ -24,3 +24,32 @@ These variables drive the configuration for:
 When deploying, ensure the environment variables are populated before running
 `docker compose -f docker-compose.prod.yml up -d` so every service receives the
 correct values.
+
+## Background sync workers
+
+Jira, Confluence, and Git repository synchronisation now run asynchronously
+through a background worker so that API requests return immediately with a job
+ID.
+
+### Local development
+
+Run the stack with the worker service processing queued sync jobs:
+
+```bash
+docker compose up backend worker
+```
+
+The backend will enqueue sync jobs in the database and the worker will process
+them in the background.
+
+### Production / EC2 deployments
+
+The production compose file already defines the `worker` service. Start or
+update the stack with:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d backend worker
+```
+
+The worker polls the shared database for new sync jobs. Restart the worker after
+deploying new code so the latest task definitions are loaded.

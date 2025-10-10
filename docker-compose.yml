@@ -56,5 +56,28 @@ services:
     stdin_open: true
     tty: true
 
+  worker:
+    build:
+      context: ./backend
+    container_name: backend_worker
+    command:
+      [
+        "./wait-for-it.sh",
+        "db:5432",
+        "--",
+        "python",
+        "manage.py",
+        "process_sync_jobs",
+      ]
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    environment:
+      - DEBUG=True
+      - ENV=development
+    depends_on:
+      - db
+
 volumes:
   postgres_data:

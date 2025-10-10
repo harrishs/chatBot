@@ -1,18 +1,15 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
 from rest_framework.authentication import SessionAuthentication
-from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile
+from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeedback, Credential, GitCredential, GitRepoSync, GitRepoFile, SyncJob, SyncStatusMixin
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
 import logging
-import requests
+from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
 from rest_framework.views import APIView
-from chat.utils.jira import fetch_jira_issues, ingest_jira_issue
-from chat.utils.confluence import fetch_confluence_pages, ingest_confluence_pages
-from chat.utils.github import run_github_sync
 from chat.utils.embeddings import search_documents
 from chat.utils.rag import generate_answer
 from django.contrib.auth import authenticate, login, logout
@@ -22,6 +19,29 @@ from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 
 
 logger = logging.getLogger(__name__)
+
+
+def _build_sync_status_response(sync):
+    job_id = getattr(sync, 'current_job_id', None)
+    job_status = None
+    job_message = None
+    if job_id:
+        try:
+            job_obj = SyncJob.objects.get(pk=int(job_id))
+        except (ValueError, SyncJob.DoesNotExist):
+            job_obj = None
+        if job_obj:
+            job_status = job_obj.status
+            job_message = job_obj.status_message
+
+    return {
+        'job_id': job_id,
+        'status': sync.sync_status,
+        'message': sync.sync_status_message,
+        'last_sync_time': sync.last_sync_time,
+        'job_status': job_status,
+        'job_message': job_message,
+    }
 
 
 User = get_user_model()
@@ -210,41 +230,31 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        try:
-            issues_with_comments = fetch_jira_issues(sync)
-            documents_created = 0
-            for issue, comments in issues_with_comments:
-                docs = ingest_jira_issue(
-                    company=sync.chatBot.company,
-                    chatbot=sync.chatBot,
-                    issue=issue,
-                    comments=comments,
-                )
-                documents_created += len(docs)
-        except requests.Timeout:
-            logger.exception("Jira sync timed out for sync %s", sync.pk)
-            return Response(
-                {"detail": "Jira sync timed out while contacting the Jira API. Please try again shortly."},
-                status=status.HTTP_504_GATEWAY_TIMEOUT,
+        with transaction.atomic():
+            job = SyncJob.objects.create(
+                sync_type=SyncJob.JobType.JIRA,
+                sync_id=sync.id,
+                status=SyncStatusMixin.Status.QUEUED,
+                status_message='Waiting to be processed.',
             )
-        except requests.RequestException as exc:
-            logger.exception("Jira sync failed due to network error for sync %s", sync.pk)
-            return Response(
-                {"detail": f"Jira sync failed due to a network error: {exc}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        except Exception:
-            logger.exception("Failed to sync Jira for sync %s", sync.pk)
-            return Response(
-                {"detail": "Failed to sync Jira."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
+            sync.sync_status = JiraSync.Status.QUEUED
+            sync.sync_status_message = 'Sync job queued.'
+            sync.current_job_id = str(job.id)
+            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
         return Response(
             {
-                "status": f"Jira sync completed, {len(issues_with_comments)} issues processed.",
-                "documents_ingested": documents_created,
+                'job_id': str(job.id),
+                'status': sync.sync_status,
+                'message': sync.sync_status_message,
             },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['get'])
+    def status(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        return Response(
+            _build_sync_status_response(sync),
             status=status.HTTP_200_OK,
         )
 
@@ -306,33 +316,31 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        try:
-            pages = fetch_confluence_pages(sync)
-            documents_created = ingest_confluence_pages(sync, pages=pages)
-        except requests.Timeout:
-            logger.exception("Confluence sync timed out for sync %s", sync.pk)
-            return Response(
-                {"detail": "Confluence sync timed out while contacting the Confluence API. Please try again."},
-                status=status.HTTP_504_GATEWAY_TIMEOUT,
+        with transaction.atomic():
+            job = SyncJob.objects.create(
+                sync_type=SyncJob.JobType.CONFLUENCE,
+                sync_id=sync.id,
+                status=SyncStatusMixin.Status.QUEUED,
+                status_message='Waiting to be processed.',
             )
-        except requests.RequestException as exc:
-            logger.exception("Confluence sync failed due to network error for sync %s", sync.pk)
-            return Response(
-                {"detail": f"Confluence sync failed due to a network error: {exc}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        except Exception:
-            logger.exception("Failed to sync Confluence for sync %s", sync.pk)
-            return Response(
-                {"detail": "Failed to sync Confluence."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
+            sync.sync_status = ConfluenceSync.Status.QUEUED
+            sync.sync_status_message = 'Sync job queued.'
+            sync.current_job_id = str(job.id)
+            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
         return Response(
             {
-                "status": f"Confluence sync completed, {len(pages)} pages processed.",
-                "documents_ingested": documents_created,
+                'job_id': str(job.id),
+                'status': sync.sync_status,
+                'message': sync.sync_status_message,
             },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['get'])
+    def status(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        return Response(
+            _build_sync_status_response(sync),
             status=status.HTTP_200_OK,
         )
 
@@ -414,33 +422,34 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         sync = self.get_object()
         if sync.chatBot.company != request.user.company:
             raise PermissionDenied("You cannot sync a repo for a chatbot outside your company")
-        
-        try:
-            files_processed, documents_ingested = run_github_sync(sync)
-        except requests.Timeout:
-            logger.exception("GitHub sync timed out for sync %s", sync.pk)
-            return Response(
-                {"detail": "GitHub sync timed out while contacting the GitHub API. Please try again."},
-                status=status.HTTP_504_GATEWAY_TIMEOUT,
-            )
-        except requests.RequestException as exc:
-            logger.exception("GitHub sync failed due to network error for sync %s", sync.pk)
-            return Response(
-                {"detail": f"GitHub sync failed due to a network error: {exc}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-        except Exception:
-            logger.exception("Failed to sync GitHub for sync %s", sync.pk)
-            return Response(
-                {"detail": "Failed to sync GitHub."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
 
+        with transaction.atomic():
+            job = SyncJob.objects.create(
+                sync_type=SyncJob.JobType.GIT,
+                sync_id=sync.id,
+                status=SyncStatusMixin.Status.QUEUED,
+                status_message='Waiting to be processed.',
+            )
+            sync.sync_status = GitRepoSync.Status.QUEUED
+            sync.sync_status_message = 'Sync job queued.'
+            sync.current_job_id = str(job.id)
+            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
         return Response(
             {
-                "status": f"GitHub sync completed, {files_processed} files processed.",
-                "documents_ingested": documents_ingested,
+                'job_id': str(job.id),
+                'status': sync.sync_status,
+                'message': sync.sync_status_message,
             },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['get'])
+    def status(self, request, chatbot_pk=None, pk=None):
+        sync = self.get_object()
+        if sync.chatBot.company != request.user.company:
+            raise PermissionDenied("You cannot view status for a repo outside your company")
+        return Response(
+            _build_sync_status_response(sync),
             status=status.HTTP_200_OK,
         )
     

@@ -93,7 +93,18 @@ class JiraSyncSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = JiraSync
-        fields = ['id', 'board_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
+        fields = [
+            'id',
+            'board_url',
+            'last_sync_time',
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
+            'credential',
+            'credential_id',
+            'sync_interval',
+        ]
+        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -114,7 +125,18 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ConfluenceSync
-        fields = ['id', 'space_url', 'last_sync_time', 'credential', 'credential_id', 'sync_interval']
+        fields = [
+            'id',
+            'space_url',
+            'last_sync_time',
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
+            'credential',
+            'credential_id',
+            'sync_interval',
+        ]
+        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -176,10 +198,14 @@ class GitRepoSyncSerializer(serializers.ModelSerializer):
             'repo_full_name',
             'branch',
             'last_sync_time',
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
             'sync_interval',
             'credential',
             'credential_id',
         ]
+        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
