@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import api from "../api/axios";
 
@@ -41,6 +42,7 @@ export function AuthProvider({ children }) {
                         try {
                                 await fetchSession();
                         } catch (error) {
+                                console.error("Failed to refresh session", error);
                                 if (active) {
                                         setUser(null);
                                 }
