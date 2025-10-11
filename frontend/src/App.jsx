@@ -7,6 +7,7 @@ function App() {
         const [users, setUsers] = useState([]);
         const navigate = useNavigate();
         const { logout, user } = useAuth();
+        const canManageUsers = Boolean(user?.is_staff);
 
         useEffect(() => {
                 if (!user) {
@@ -40,6 +41,12 @@ function App() {
                 <div style={{ padding: "2rem" }}>
                         <h2>Users in Your Company</h2>
                         <button onClick={handleLogout}>Logout</button>
+                        {!canManageUsers && user && (
+                                <p style={{ marginTop: "1rem", color: "#555" }}>
+                                        You have read-only access. Contact an administrator to manage
+                                        user accounts.
+                                </p>
+                        )}
                         <ul>
                                 {users.map((u) => (
                                         <li key={u.id}>

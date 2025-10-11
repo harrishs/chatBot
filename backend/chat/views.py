@@ -58,7 +58,7 @@ class IsAdminOrReadOnly(permissions.BasePermission):
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
     def get_queryset(self):
         return User.objects.filter(company=self.request.user.company)
