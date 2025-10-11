@@ -464,14 +464,17 @@ def query_documents(request, chatbot_id):
         "top_k": 5
     }
     """
+    chatbot = get_object_or_404(
+        ChatBotInstance, id=chatbot_id, company=request.user.company
+    )
     query = request.data.get("query")
     company_id = request.user.company_id
     top_k = int(request.data.get("top_k", 5))
     if not query:
         return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
-        results = search_documents(company_id, chatbot_id, query, top_k)
+        results = search_documents(company_id, chatbot.id, query, top_k)
         return Response(results)
     except Exception as e:
         logger.error(f"Error querying documents: {e}")
@@ -487,13 +490,16 @@ def chat_with_bot(request, chatbot_id):
         "query": "How do I deploy the app with Docker?"
     }
     """
+    chatbot = get_object_or_404(
+        ChatBotInstance, id=chatbot_id, company=request.user.company
+    )
     query = request.data.get("query")
     company_id = request.user.company_id
     if not query:
         return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
-        response = generate_answer(company_id, chatbot_id, query, top_k=5)
+        response = generate_answer(company_id, chatbot.id, query, top_k=5)
         return Response(response)
     except Exception as e:
         logger.error(f"Error generating answer: {e}")

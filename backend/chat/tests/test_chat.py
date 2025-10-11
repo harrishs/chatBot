@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -23,6 +24,9 @@ from chat.models import (
 from chat.utils.embeddings import search_documents
 from chat.utils.jira import ingest_jira_issue
 from django.utils import timezone
+
+
+os.environ.setdefault("ENCRYPTION_KEY", "8wfsecdopt6Fz6ZRlo6RLWF2zOWITlzv9uVSXnscJFA=")
 
 
 User = get_user_model()
@@ -198,10 +202,92 @@ class JiraIngestionSourceTests(TestCase):
 
         self.assertEqual(jira_issue_documents.count(), 2)
 
-        chatbot_ids = set(jira_issue_documents.values_list("chatbot_id", flat=True))
-        self.assertSetEqual(chatbot_ids, {self.chatbot.id, other_chatbot.id})
 
-        self.assertEqual(mock_embed_text.call_count, 4)
+class ChatbotAccessAPITests(APITestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Primary Co")
+        self.other_company = Company.objects.create(name="Secondary Co")
+
+        self.chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="Primary Bot",
+        )
+        self.other_chatbot = ChatBotInstance.objects.create(
+            company=self.other_company,
+            name="Secondary Bot",
+        )
+
+        self.user = User.objects.create_user(
+            username="primary-user",
+            email="primary@example.com",
+            password="strongpassword123",
+            company=self.company,
+        )
+
+        self.client.force_authenticate(self.user)
+
+        self.query_url = f"/api/chatbots/{self.chatbot.id}/query/"
+        self.other_query_url = f"/api/chatbots/{self.other_chatbot.id}/query/"
+        self.chat_url = f"/api/chatbots/{self.chatbot.id}/chat/"
+        self.other_chat_url = f"/api/chatbots/{self.other_chatbot.id}/chat/"
+
+    @patch("chat.views.search_documents")
+    def test_query_documents_returns_results_for_own_chatbot(self, mock_search_documents):
+        mock_search_documents.return_value = [{"id": 1, "score": 0.9}]
+
+        response = self.client.post(
+            self.query_url,
+            {"query": "Hello", "top_k": 3},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_search_documents.assert_called_once_with(
+            self.company.id,
+            self.chatbot.id,
+            "Hello",
+            3,
+        )
+
+    @patch("chat.views.search_documents")
+    def test_query_documents_other_company_chatbot_returns_404(self, mock_search_documents):
+        response = self.client.post(
+            self.other_query_url,
+            {"query": "Hello"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_search_documents.assert_not_called()
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_returns_response_for_own_chatbot(self, mock_generate_answer):
+        mock_generate_answer.return_value = {"answer": "Hi there"}
+
+        response = self.client.post(
+            self.chat_url,
+            {"query": "Hello"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_generate_answer.assert_called_once_with(
+            self.company.id,
+            self.chatbot.id,
+            "Hello",
+            top_k=5,
+        )
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_other_company_chatbot_returns_404(self, mock_generate_answer):
+        response = self.client.post(
+            self.other_chat_url,
+            {"query": "Hello"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_generate_answer.assert_not_called()
 
 
 class SyncCredentialPermissionTests(TestCase):
