@@ -219,8 +219,3 @@ class GitRepoFileSerializer(serializers.ModelSerializer):
     class Meta:
         model = GitRepoFile
         fields = ['id', 'path', 'sha', 'size', 'url', 'content', 'last_updated']
-
-class GitCredentialSummarySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = GitCredential
-        fields = ['id', 'name', 'github_username']
