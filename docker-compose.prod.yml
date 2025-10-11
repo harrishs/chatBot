@@ -34,8 +34,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-      args:
-        ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     container_name: backend
     restart: unless-stopped
     env_file:
@@ -64,8 +62,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
-      args:
-        ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     container_name: backend_worker
     restart: unless-stopped
     command: ["python", "manage.py", "process_sync_jobs"]

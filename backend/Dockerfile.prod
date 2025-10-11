@@ -1,14 +1,11 @@
 # Use official Python image as base
 FROM python:3.11-slim
 
-ARG ENCRYPTION_KEY
-
 # Env: keep your originals
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DJANGO_SETTINGS_MODULE=core.settings \
-    ENV=production \
-    ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    ENV=production
 
 # Set working directory
 WORKDIR /app
