@@ -13,6 +13,7 @@ commands:
 | `FRONTEND_DOMAIN` | `example.com` | Primary hostname served by Caddy and allowed by the backend. |
 | `FRONTEND_WWW_DOMAIN` | `www.example.com` | Secondary hostname (set to the same value as `FRONTEND_DOMAIN` if not using a second host). |
 | `API_BASE_URL` | `https://example.com/api` | Public URL where the API is exposed; used for the frontend build arg and runtime CORS settings. |
+| `OPENAI_API_KEY` | `sk-live-...` | Required for all demo or production deployments; without it the backend refuses to start. |
 | `ENCRYPTION_KEY` | `8wfsecdopt6Fz6ZRlo6RLWF2zOWITlzv9uVSXnscJFA=` | Secret key used by the backend and worker services for Fernet encryption; must be provided at runtime (e.g. via `.env.production`). |
 | `DJANGO_SECRET_KEY` | `django-insecure-<random>` | Required when `ENV=production` or `DEBUG` is `False`; secret key used by Django for cryptographic signing. |
 

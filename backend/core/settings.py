@@ -22,7 +22,9 @@ if not ENCRYPTION_KEY:
     raise ImproperlyConfigured('ENCRYPTION_KEY is required')
 fernet = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)
 
-OPENAI_API_KEY = config('OPENAI_API_KEY', default='test-openai-key')
+OPENAI_API_KEY = config('OPENAI_API_KEY', default=None)
+if not OPENAI_API_KEY:
+    raise ImproperlyConfigured('OPENAI_API_KEY is required')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
