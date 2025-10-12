@@ -31,13 +31,22 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('DJANGO_SECRET_KEY', default='test-secret-key')
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=False, cast=bool)
 
 ENV = config('ENV', default='development')
+
+# SECURITY WARNING: keep the secret key used in production secret!
+_configured_secret_key = config('DJANGO_SECRET_KEY', default=None)
+_env_is_production = (ENV or '').strip().lower() == 'production'
+if not _configured_secret_key:
+    if _env_is_production or not DEBUG:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is required when ENV is 'production' or DEBUG is False"
+        )
+    SECRET_KEY = 'test-secret-key'
+else:
+    SECRET_KEY = _configured_secret_key
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
 CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
