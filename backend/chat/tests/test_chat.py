@@ -497,6 +497,24 @@ class SyncCredentialValidationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('credential_id', response.data)
 
+    def test_jira_sync_with_non_numeric_chatbot_pk_returns_400(self):
+        response = self.client.get("/api/chatBots/abc/jiraSyncs/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('chatbot', response.data)
+
+    def test_confluence_sync_with_non_numeric_chatbot_pk_returns_400(self):
+        response = self.client.get("/api/chatBots/abc/confluenceSyncs/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('chatbot', response.data)
+
+    def test_git_repo_sync_with_non_numeric_chatbot_pk_returns_400(self):
+        response = self.client.get("/api/chatBots/abc/gitRepoSyncs/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('chatbot', response.data)
+
 
 class CompanyPermissionsTests(APITestCase):
     def setUp(self):
