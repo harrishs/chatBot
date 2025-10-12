@@ -411,6 +411,93 @@ class SyncCredentialPermissionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class SyncCredentialValidationTests(APITestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Tenant Co")
+        self.user = User.objects.create_user(
+            username="tenant-user",
+            email="tenant@example.com",
+            password="password123",
+            company=self.company,
+        )
+        self.chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="Support Bot",
+        )
+        self.credential = Credential.objects.create(
+            company=self.company,
+            name="Tenant Cred",
+            email="tenant-cred@example.com",
+            _api_key="dummy",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_jira_sync_create_with_non_numeric_credential_id_returns_400(self):
+        url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/"
+        payload = {
+            'board_url': 'https://example.atlassian.net',
+            'credential_id': 'not-a-number',
+            'sync_interval': JiraSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('credential_id', response.data)
+
+    def test_jira_sync_update_with_non_numeric_credential_id_returns_400(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url='https://example.atlassian.net',
+            credential=self.credential,
+        )
+        url = f"/api/chatBots/{self.chatbot.id}/jiraSyncs/{sync.id}/"
+        payload = {
+            'board_url': sync.board_url,
+            'credential_id': 'not-a-number',
+            'sync_interval': sync.sync_interval,
+        }
+
+        response = self.client.put(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('credential_id', response.data)
+
+    def test_confluence_sync_create_with_non_numeric_credential_id_returns_400(self):
+        url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/"
+        payload = {
+            'space_url': 'https://example.atlassian.net/wiki',
+            'credential_id': 'not-a-number',
+            'sync_interval': ConfluenceSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('credential_id', response.data)
+
+    def test_confluence_sync_update_with_non_numeric_credential_id_returns_400(self):
+        sync = ConfluenceSync.objects.create(
+            chatBot=self.chatbot,
+            space_url='https://example.atlassian.net/wiki',
+            credential=self.credential,
+        )
+        url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/{sync.id}/"
+        payload = {
+            'space_url': sync.space_url,
+            'credential_id': 'not-a-number',
+            'sync_interval': sync.sync_interval,
+        }
+
+        response = self.client.put(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('credential_id', response.data)
+
+
 class CompanyPermissionsTests(APITestCase):
     def setUp(self):
         self.company_one = Company.objects.create(name="Company One")

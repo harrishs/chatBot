@@ -188,7 +188,11 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         if not credential_id:
             return
         try:
-            credential = Credential.objects.get(pk=credential_id)
+            credential_pk = int(credential_id)
+        except (TypeError, ValueError):
+            raise ValidationError({'credential_id': ['A valid integer is required.']})
+        try:
+            credential = Credential.objects.get(pk=credential_pk)
         except Credential.DoesNotExist:
             return
         self._validate_credential(credential)
@@ -272,7 +276,11 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         if not credential_id:
             return
         try:
-            credential = Credential.objects.get(pk=credential_id)
+            credential_pk = int(credential_id)
+        except (TypeError, ValueError):
+            raise ValidationError({'credential_id': ['A valid integer is required.']})
+        try:
+            credential = Credential.objects.get(pk=credential_pk)
         except Credential.DoesNotExist:
             return
         self._validate_credential(credential)
