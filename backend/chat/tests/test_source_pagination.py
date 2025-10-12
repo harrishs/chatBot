@@ -276,7 +276,7 @@ class SourcePaginationTests(TestCase):
             return responses.pop(0)
 
         with patch("chat.utils.confluence._SESSION.get", side_effect=fake_get):
-            pages = fetch_confluence_pages(sync)
+            pages, _ = fetch_confluence_pages(sync)
 
         self.assertEqual(len(pages), 3)
         self.assertEqual(ConfluencePage.objects.count(), 3)

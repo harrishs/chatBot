@@ -17,6 +17,7 @@ from chat.models import (
     SyncJob,
     SyncStatusMixin,
 )
+from chat.tasks import SyncRunResult, run_confluence_sync, run_git_repo_sync, run_jira_sync
 
 
 User = get_user_model()
@@ -68,7 +69,9 @@ class SyncIngestionTests(APITestCase):
                 embedding=comment_embedding,
             )
             sync_obj.sync_status = JiraSync.Status.SUCCEEDED
-            sync_obj.sync_status_message = "Processed 1 issues and ingested 2 documents."
+            sync_obj.sync_status_message = (
+                "Processed 1 issues and ingested 2 documents. Deleted 0 issues and 0 comments."
+            )
             sync_obj.last_sync_time = timezone.now()
             if job_id:
                 sync_obj.current_job_id = job_id
@@ -80,7 +83,7 @@ class SyncIngestionTests(APITestCase):
                     "current_job_id",
                 ]
             )
-            return 1, 2
+            return SyncRunResult(processed=1, documents=2, deleted={"issues": 0, "comments": 0})
 
         mock_run_jira_sync.side_effect = fake_run
 
@@ -98,11 +101,17 @@ class SyncIngestionTests(APITestCase):
 
         job = SyncJob.objects.get(pk=int(job_id))
         self.assertEqual(job.status, SyncStatusMixin.Status.SUCCEEDED)
-        self.assertEqual(job.status_message, "Processed 1 Jira issues (2 documents ingested).")
+        self.assertEqual(
+            job.status_message,
+            "Processed 1 Jira issues (2 documents ingested, 0 issues deleted, 0 comments deleted).",
+        )
 
         sync.refresh_from_db()
         self.assertEqual(sync.sync_status, JiraSync.Status.SUCCEEDED)
-        self.assertEqual(sync.sync_status_message, "Processed 1 issues and ingested 2 documents.")
+        self.assertEqual(
+            sync.sync_status_message,
+            "Processed 1 issues and ingested 2 documents. Deleted 0 issues and 0 comments.",
+        )
         self.assertIsNotNone(sync.last_sync_time)
 
         status_url = f"{self.api_prefix}/chatBots/{self.chatbot.pk}/jiraSyncs/{sync.pk}/status/"
@@ -110,11 +119,14 @@ class SyncIngestionTests(APITestCase):
         self.assertEqual(status_response.status_code, status.HTTP_200_OK)
         self.assertEqual(status_response.data["job_id"], str(job_id))
         self.assertEqual(status_response.data["status"], JiraSync.Status.SUCCEEDED)
-        self.assertEqual(status_response.data["message"], "Processed 1 issues and ingested 2 documents.")
+        self.assertEqual(
+            status_response.data["message"],
+            "Processed 1 issues and ingested 2 documents. Deleted 0 issues and 0 comments.",
+        )
         self.assertEqual(status_response.data["job_status"], SyncStatusMixin.Status.SUCCEEDED)
         self.assertEqual(
             status_response.data["job_message"],
-            "Processed 1 Jira issues (2 documents ingested).",
+            "Processed 1 Jira issues (2 documents ingested, 0 issues deleted, 0 comments deleted).",
         )
         self.assertEqual(mock_embed_text.call_count, 2)
 
@@ -139,7 +151,9 @@ class SyncIngestionTests(APITestCase):
                 embedding=embedding,
             )
             sync_obj.sync_status = ConfluenceSync.Status.SUCCEEDED
-            sync_obj.sync_status_message = "Processed 1 pages and ingested 1 documents."
+            sync_obj.sync_status_message = (
+                "Processed 1 pages and ingested 1 documents. Deleted 0 pages."
+            )
             sync_obj.last_sync_time = timezone.now()
             if job_id:
                 sync_obj.current_job_id = job_id
@@ -151,7 +165,7 @@ class SyncIngestionTests(APITestCase):
                     "current_job_id",
                 ]
             )
-            return 1, 1
+            return SyncRunResult(processed=1, documents=1, deleted={"pages": 0})
 
         mock_run_confluence_sync.side_effect = fake_run
 
@@ -169,11 +183,17 @@ class SyncIngestionTests(APITestCase):
 
         job = SyncJob.objects.get(pk=int(job_id))
         self.assertEqual(job.status, SyncStatusMixin.Status.SUCCEEDED)
-        self.assertEqual(job.status_message, "Processed 1 Confluence pages (1 documents ingested).")
+        self.assertEqual(
+            job.status_message,
+            "Processed 1 Confluence pages (1 documents ingested, 0 pages deleted).",
+        )
 
         sync.refresh_from_db()
         self.assertEqual(sync.sync_status, ConfluenceSync.Status.SUCCEEDED)
-        self.assertEqual(sync.sync_status_message, "Processed 1 pages and ingested 1 documents.")
+        self.assertEqual(
+            sync.sync_status_message,
+            "Processed 1 pages and ingested 1 documents. Deleted 0 pages.",
+        )
         self.assertIsNotNone(sync.last_sync_time)
 
         status_url = f"{self.api_prefix}/chatBots/{self.chatbot.pk}/confluenceSyncs/{sync.pk}/status/"
@@ -181,11 +201,14 @@ class SyncIngestionTests(APITestCase):
         self.assertEqual(status_response.status_code, status.HTTP_200_OK)
         self.assertEqual(status_response.data["job_id"], str(job_id))
         self.assertEqual(status_response.data["status"], ConfluenceSync.Status.SUCCEEDED)
-        self.assertEqual(status_response.data["message"], "Processed 1 pages and ingested 1 documents.")
+        self.assertEqual(
+            status_response.data["message"],
+            "Processed 1 pages and ingested 1 documents. Deleted 0 pages.",
+        )
         self.assertEqual(status_response.data["job_status"], SyncStatusMixin.Status.SUCCEEDED)
         self.assertEqual(
             status_response.data["job_message"],
-            "Processed 1 Confluence pages (1 documents ingested).",
+            "Processed 1 Confluence pages (1 documents ingested, 0 pages deleted).",
         )
         self.assertEqual(mock_embed_text.call_count, 1)
 
@@ -223,7 +246,9 @@ class SyncIngestionTests(APITestCase):
                 embedding=embedding,
             )
             sync_obj.sync_status = GitRepoSync.Status.SUCCEEDED
-            sync_obj.sync_status_message = "Processed 1 files and ingested 1 documents."
+            sync_obj.sync_status_message = (
+                "Processed 1 files and ingested 1 documents. Deleted 0 files."
+            )
             sync_obj.last_sync_time = timezone.now()
             if job_id:
                 sync_obj.current_job_id = job_id
@@ -235,7 +260,7 @@ class SyncIngestionTests(APITestCase):
                     "current_job_id",
                 ]
             )
-            return 1, 1
+            return SyncRunResult(processed=1, documents=1, deleted={"files": 0})
 
         mock_run_git_repo_sync.side_effect = fake_run
 
@@ -250,11 +275,17 @@ class SyncIngestionTests(APITestCase):
 
         job = SyncJob.objects.get(pk=int(job_id))
         self.assertEqual(job.status, SyncStatusMixin.Status.SUCCEEDED)
-        self.assertEqual(job.status_message, "Processed 1 repository files (1 documents ingested).")
+        self.assertEqual(
+            job.status_message,
+            "Processed 1 repository files (1 documents ingested, 0 files deleted).",
+        )
 
         sync.refresh_from_db()
         self.assertEqual(sync.sync_status, GitRepoSync.Status.SUCCEEDED)
-        self.assertEqual(sync.sync_status_message, "Processed 1 files and ingested 1 documents.")
+        self.assertEqual(
+            sync.sync_status_message,
+            "Processed 1 files and ingested 1 documents. Deleted 0 files.",
+        )
         self.assertIsNotNone(sync.last_sync_time)
 
         status_url = f"{self.api_prefix}/chatBots/{self.chatbot.pk}/gitRepoSyncs/{sync.pk}/status/"
@@ -262,11 +293,14 @@ class SyncIngestionTests(APITestCase):
         self.assertEqual(status_response.status_code, status.HTTP_200_OK)
         self.assertEqual(status_response.data["job_id"], str(job_id))
         self.assertEqual(status_response.data["status"], GitRepoSync.Status.SUCCEEDED)
-        self.assertEqual(status_response.data["message"], "Processed 1 files and ingested 1 documents.")
+        self.assertEqual(
+            status_response.data["message"],
+            "Processed 1 files and ingested 1 documents. Deleted 0 files.",
+        )
         self.assertEqual(status_response.data["job_status"], SyncStatusMixin.Status.SUCCEEDED)
         self.assertEqual(
             status_response.data["job_message"],
-            "Processed 1 repository files (1 documents ingested).",
+            "Processed 1 repository files (1 documents ingested, 0 files deleted).",
         )
         self.assertEqual(mock_embed_text.call_count, 1)
 
@@ -317,4 +351,123 @@ class SyncIngestionTests(APITestCase):
         self.assertEqual(status_response.data["message"], "Failed to sync Jira.")
         self.assertEqual(status_response.data["job_status"], SyncStatusMixin.Status.FAILED)
         self.assertEqual(status_response.data["job_message"], "Failed to sync Jira.")
+        self.assertEqual(Document.objects.count(), 0)
+
+    @patch("chat.tasks.ingest_jira_issue", return_value=[])
+    @patch("chat.tasks.fetch_jira_issues", return_value=([], set(), {}))
+    def test_jira_sync_cleanup_removes_missing_content(self, mock_fetch, mock_ingest):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+        )
+
+        issue = sync.issues.create(
+            issue_key="TEST-1",
+            summary="Old issue",
+            description="Desc",
+            status="Done",
+            created_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        comment = issue.comments.create(
+            author="Alice",
+            content="Hello",
+            created_at=timezone.now(),
+            remote_id="c-1",
+        )
+
+        Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="jira_issue",
+            source_id=issue.issue_key,
+            content="Old issue",
+            embedding=[0.0] * 1536,
+        )
+        Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="jira_comment",
+            source_id=f"{issue.issue_key}_comment_{comment.pk}",
+            content="Hello",
+            embedding=[0.0] * 1536,
+        )
+
+        result = run_jira_sync(sync.id)
+
+        self.assertEqual(result.deleted["issues"], 1)
+        self.assertEqual(result.deleted["comments"], 1)
+        self.assertFalse(sync.issues.exists())
+        self.assertEqual(Document.objects.count(), 0)
+
+    @patch("chat.tasks.ingest_confluence_pages", return_value=0)
+    @patch("chat.tasks.fetch_confluence_pages", return_value=([], set()))
+    def test_confluence_sync_cleanup_removes_missing_pages(self, mock_fetch, mock_ingest):
+        sync = ConfluenceSync.objects.create(
+            chatBot=self.chatbot,
+            space_url="https://example.atlassian.net/wiki/spaces/CONF/pages/1",
+        )
+
+        page = sync.pages.create(
+            remote_id="p-1",
+            title="Old page",
+            content="Body",
+            url="https://example.atlassian.net/wiki/p-1",
+            last_updated=timezone.now(),
+        )
+
+        Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="confluence",
+            source_id=page.pk,
+            content="Body",
+            embedding=[0.0] * 1536,
+        )
+
+        result = run_confluence_sync(sync.id)
+
+        self.assertEqual(result.deleted["pages"], 1)
+        self.assertFalse(sync.pages.exists())
+        self.assertEqual(Document.objects.count(), 0)
+
+    @patch("chat.tasks.run_github_sync", return_value=(0, 0, set()))
+    def test_git_sync_cleanup_removes_missing_files(self, mock_run):
+        credential = GitCredential(
+            company=self.company,
+            name="GitHub",
+            github_username="octocat",
+        )
+        credential.token = "token"
+        credential.save()
+
+        sync = GitRepoSync.objects.create(
+            chatBot=self.chatbot,
+            credential=credential,
+            repo_full_name="octocat/hello-world",
+            branch="main",
+        )
+
+        repo_file = sync.files.create(
+            path="README.md",
+            sha="abc",
+            size=10,
+            url="https://github.com/octocat/hello-world/blob/main/README.md",
+            content="Hello",
+            last_updated=timezone.now(),
+        )
+
+        Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="github",
+            source_id=str(repo_file.pk),
+            content="Hello",
+            embedding=[0.0] * 1536,
+        )
+
+        result = run_git_repo_sync(sync.id)
+
+        self.assertEqual(result.deleted["files"], 1)
+        self.assertFalse(sync.files.exists())
         self.assertEqual(Document.objects.count(), 0)

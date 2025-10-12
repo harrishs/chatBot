@@ -60,14 +60,27 @@ class Command(BaseCommand):
 
         try:
             if job.sync_type == SyncJob.JobType.JIRA:
-                issues, docs = run_jira_sync(job.sync_id, job_id=job_id)
-                success_message = f'Processed {issues} Jira issues ({docs} documents ingested).'
+                result = run_jira_sync(job.sync_id, job_id=job_id)
+                success_message = (
+                    f'Processed {result.processed} Jira issues ('
+                    f'{result.documents} documents ingested, '
+                    f"{result.deleted.get('issues', 0)} issues deleted, "
+                    f"{result.deleted.get('comments', 0)} comments deleted)."
+                )
             elif job.sync_type == SyncJob.JobType.CONFLUENCE:
-                pages, docs = run_confluence_sync(job.sync_id, job_id=job_id)
-                success_message = f'Processed {pages} Confluence pages ({docs} documents ingested).'
+                result = run_confluence_sync(job.sync_id, job_id=job_id)
+                success_message = (
+                    f'Processed {result.processed} Confluence pages ('
+                    f'{result.documents} documents ingested, '
+                    f"{result.deleted.get('pages', 0)} pages deleted)."
+                )
             elif job.sync_type == SyncJob.JobType.GIT:
-                files, docs = run_git_repo_sync(job.sync_id, job_id=job_id)
-                success_message = f'Processed {files} repository files ({docs} documents ingested).'
+                result = run_git_repo_sync(job.sync_id, job_id=job_id)
+                success_message = (
+                    f'Processed {result.processed} repository files ('
+                    f'{result.documents} documents ingested, '
+                    f"{result.deleted.get('files', 0)} files deleted)."
+                )
             else:
                 raise ValueError(f'Unknown job type: {job.sync_type}')
         except Exception as exc:

@@ -160,12 +160,14 @@ class JiraComment(models.Model):
     author = models.CharField(max_length=255)
     content = models.TextField()
     created_at = models.DateTimeField()
+    remote_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
 
     def __str__(self):
         return f"Comment by {self.author} on {self.issue.issue_key}"
-    
+
 class ConfluencePage(models.Model):
     sync = models.ForeignKey(ConfluenceSync, on_delete=models.CASCADE, related_name='pages')
+    remote_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     title = models.CharField(max_length=255)
     content = models.TextField()
     url = models.URLField()

@@ -1,6 +1,6 @@
 import base64
 import logging
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Set, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -8,7 +8,9 @@ from urllib3.util.retry import Retry
 from datetime import datetime, timezone
 from urllib.parse import quote
 from chat.encryption import decrypt_api_key
-from chat.models import GitRepoSync, GitRepoFile
+from django.db.models import Q
+
+from chat.models import Document, GitRepoSync, GitRepoFile
 
 GITHUB_API = "https://api.github.com"
 
@@ -85,7 +87,15 @@ def _get_last_commit_date(full_name: str, path: str, token: str) -> datetime:
     # fallback to now
     return datetime.now(timezone.utc)
 
-def run_github_sync(sync: GitRepoSync) -> Tuple[int, int]:
+def _delete_documents_for_source_ids(base_ids: Iterable[int]) -> int:
+    deleted = 0
+    for base_id in base_ids:
+        conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
+        deleted += Document.objects.filter(source="github").filter(conditions).delete()[0]
+    return deleted
+
+
+def run_github_sync(sync: GitRepoSync) -> Tuple[int, int, Set[str]]:
     """
     Pull textual files from a repo branch and store/update GitRepoFile rows.
     Returns count of files indexed.
@@ -97,6 +107,7 @@ def run_github_sync(sync: GitRepoSync) -> Tuple[int, int]:
 
     tree = _list_tree(full_name, branch, token)
     processed_files: List[GitRepoFile] = []
+    remote_paths: Set[str] = set()
     count = 0
     for node in tree:
         if node.get('type') != 'blob':
@@ -131,6 +142,7 @@ def run_github_sync(sync: GitRepoSync) -> Tuple[int, int]:
         )
         count += 1
         processed_files.append(obj)
+        remote_paths.add(path)
 
     # bump last_sync_time
     from django.utils import timezone
@@ -144,7 +156,7 @@ def run_github_sync(sync: GitRepoSync) -> Tuple[int, int]:
         documents_ingested,
         sync.pk,
     )
-    return count, documents_ingested
+    return count, documents_ingested, remote_paths
 
 def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None = None) -> int:
     """
@@ -165,3 +177,20 @@ def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None =
         )
         count += len(docs)
     return count
+
+
+def cleanup_removed_github_files(sync: GitRepoSync, remote_paths: Set[str]) -> int:
+    queryset = GitRepoFile.objects.filter(sync=sync)
+
+    if remote_paths:
+        queryset = queryset.exclude(path__in=remote_paths)
+
+    files_to_delete = list(queryset)
+    if not files_to_delete:
+        return 0
+
+    file_ids = [file.pk for file in files_to_delete]
+    _delete_documents_for_source_ids(file_ids)
+    GitRepoFile.objects.filter(pk__in=file_ids).delete()
+
+    return len(files_to_delete)

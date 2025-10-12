@@ -9,7 +9,7 @@ class Command(BaseCommand):
         for sync in ConfluenceSync.objects.all():
             try:
                 self.stdout.write(f"Syncing Confluence pages for {sync.space_url}")
-                fetch_confluence_pages(sync)
+                _pages, _ = fetch_confluence_pages(sync)
                 self.stdout.write(self.style.SUCCESS(f"Successfully synced Confluence pages for {sync.space_url}"))
             except Exception as e:
                 self.stderr.write(self.style.ERROR(f"Error syncing Confluence pages for {sync.space_url}: {e}"))
