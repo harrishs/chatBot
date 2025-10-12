@@ -260,6 +260,36 @@ class ChatbotAccessAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         mock_search_documents.assert_not_called()
 
+    @patch("chat.views.search_documents")
+    def test_query_documents_rejects_non_numeric_top_k(self, mock_search_documents):
+        response = self.client.post(
+            self.query_url,
+            {"query": "Hello", "top_k": "abc"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            {"top_k": ["Must be an integer greater than or equal to 1."]},
+        )
+        mock_search_documents.assert_not_called()
+
+    @patch("chat.views.search_documents")
+    def test_query_documents_rejects_non_positive_top_k(self, mock_search_documents):
+        response = self.client.post(
+            self.query_url,
+            {"query": "Hello", "top_k": 0},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            {"top_k": ["Must be an integer greater than or equal to 1."]},
+        )
+        mock_search_documents.assert_not_called()
+
     @patch("chat.views.generate_answer")
     def test_chat_with_bot_returns_response_for_own_chatbot(self, mock_generate_answer):
         mock_generate_answer.return_value = {"answer": "Hi there"}

@@ -508,7 +508,12 @@ def query_documents(request, chatbot_id):
     )
     query = request.data.get("query")
     company_id = request.user.company_id
-    top_k = int(request.data.get("top_k", 5))
+    try:
+        top_k = int(request.data.get("top_k", 5))
+    except (TypeError, ValueError):
+        raise ValidationError({"top_k": ["Must be an integer greater than or equal to 1."]})
+    if top_k < 1:
+        raise ValidationError({"top_k": ["Must be an integer greater than or equal to 1."]})
     if not query:
         return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
 
