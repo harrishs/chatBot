@@ -34,6 +34,14 @@ When deploying, ensure the environment variables are populated before running
 `docker compose -f docker-compose.prod.yml up -d` so every service receives the
 correct values.
 
+### Database migrations
+
+The backend entrypoint automatically runs `python manage.py migrate --noinput`
+before collecting static files so both the web and worker containers apply
+pending database migrations on startup. Set `SKIP_MIGRATE=1` in environments
+where you need to bypass migrations (for example, in CI pipelines that use a
+pre-migrated database snapshot).
+
 ## Background sync workers
 
 Jira, Confluence, and Git repository synchronisation now run asynchronously
