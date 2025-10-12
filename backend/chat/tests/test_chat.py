@@ -365,7 +365,23 @@ class SyncCredentialPermissionTests(TestCase):
 
         response = self.client.post(url, payload, format='json')
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_jira_sync_create_with_foreign_chatbot_returns_404(self):
+        foreign_chatbot = ChatBotInstance.objects.create(
+            company=self.other_company,
+            name="Other Bot",
+        )
+        url = f"/api/chatBots/{foreign_chatbot.id}/jiraSyncs/"
+        payload = {
+            'board_url': 'https://example.atlassian.net',
+            'credential_id': self.tenant_credential.id,
+            'sync_interval': JiraSync.SYNC_INTERVAL_CHOICES[0][0],
+        }
+
+        response = self.client.post(url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
     def test_jira_sync_create_accepts_valid_payload(self):
@@ -397,7 +413,7 @@ class SyncCredentialPermissionTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_confluence_sync_create_rejects_foreign_credential(self):
         url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/"
@@ -409,7 +425,7 @@ class SyncCredentialPermissionTests(TestCase):
 
         response = self.client.post(url, payload, format='json')
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_confluence_sync_create_accepts_valid_payload(self):
         url = f"/api/chatBots/{self.chatbot.id}/confluenceSyncs/"
@@ -440,7 +456,7 @@ class SyncCredentialPermissionTests(TestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class SyncCredentialValidationTests(APITestCase):

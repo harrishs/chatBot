@@ -190,7 +190,7 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
 
     def _validate_credential(self, credential):
         if credential and credential.company != self.request.user.company:
-            raise PermissionDenied("You cannot use credentials for a different company")
+            raise NotFound("Credential not found.")
 
     def _validate_request_credential_id(self, data):
         credential_id = data.get('credential_id') or data.get('credential')
@@ -213,10 +213,11 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         # Attach the chatbot manually since it's passed through the URL
         chatbot_pk = self._get_chatbot_pk()
-        try:
-            chatBot = ChatBotInstance.objects.get(id=chatbot_pk, company=request.user.company)
-        except ChatBotInstance.DoesNotExist:
-            raise PermissionDenied("Invalid chatbot or not in your company")
+        chatBot = get_object_or_404(
+            ChatBotInstance,
+            id=chatbot_pk,
+            company=request.user.company,
+        )
 
         self._validate_request_credential_id(request.data)
 
@@ -284,7 +285,7 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
 
     def _validate_credential(self, credential):
         if credential and credential.company != self.request.user.company:
-            raise PermissionDenied("You cannot use credentials for a different company")
+            raise NotFound("Credential not found.")
 
     def _validate_request_credential_id(self, data):
         credential_id = data.get('credential_id') or data.get('credential')
@@ -306,13 +307,11 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         chatbot_pk = self._get_chatbot_pk()
-        try:
-            chatBot = ChatBotInstance.objects.get(
-                id=chatbot_pk,
-                company=request.user.company
-            )
-        except ChatBotInstance.DoesNotExist:
-            raise PermissionDenied("Invalid chatbot or not in your company")
+        chatBot = get_object_or_404(
+            ChatBotInstance,
+            id=chatbot_pk,
+            company=request.user.company,
+        )
 
         self._validate_request_credential_id(request.data)
 
