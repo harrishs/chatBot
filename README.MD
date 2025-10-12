@@ -22,6 +22,12 @@ These variables drive the configuration for:
 * Backend host, CSRF, and CORS allow-lists for Django.
 * Caddy virtual hosts via environment placeholders in `deploy/Caddyfile`.
 
+> **Important:** Ensure your proxy forwards the `X-Forwarded-Proto` header with
+> the value `https` for secure requests. Caddy does this by default and Django's
+> `SECURE_PROXY_SSL_HEADER` setting is configured to trust it so generated
+> absolute URLs use `https://` and cookies remain marked as secure when served
+> through the proxy.
+
 When deploying, ensure the environment variables are populated before running
 `docker compose -f docker-compose.prod.yml up -d` so every service receives the
 correct values.
