@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from chat.utils.embeddings import search_documents
 from chat.utils.rag import generate_answer
 from django.contrib.auth import authenticate, login, logout
+from django.http import Http404
 from django.conf import settings
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
@@ -364,8 +365,12 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
             raise ValidationError({'chatBot': ['This field is required.']})
 
         try:
-            return ChatBotInstance.objects.get(pk=chat_bot_id)
-        except ChatBotInstance.DoesNotExist:
+            return get_object_or_404(
+                ChatBotInstance,
+                pk=chat_bot_id,
+                company=self.request.user.company,
+            )
+        except Http404:
             raise NotFound('Chatbot not found.')
 
     def create(self, request, *args, **kwargs):
@@ -379,7 +384,7 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer, chatBot=None):
         chatBot = chatBot or self._get_chatbot_from_request()
         if chatBot.company != self.request.user.company:
-            raise PermissionDenied("You cannot create feedback for a chatbot outside your company")
+            raise NotFound('Chatbot not found.')
         serializer.save(chatBot=chatBot)
 
 class GitCredentialViewSet(viewsets.ModelViewSet):
