@@ -21,6 +21,9 @@ VITE_API_BASE_URL=http://localhost:8000/api npm run dev
 
 This starts the Vite dev server on [http://localhost:5173](http://localhost:5173). The environment variable can also be stored in a `.env.local` file if you prefer.
 
+> **Note**
+> The repository does not track `node_modules/`. Make sure to run `npm install` locally before running any scripts, or rely on the dependency installation that happens inside the Dockerfile builds.
+
 ## Production build
 
 ```bash
