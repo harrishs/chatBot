@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from decouple import Csv, config
 from django.core.exceptions import ImproperlyConfigured
@@ -50,8 +51,20 @@ if not _configured_secret_key:
 else:
     SECRET_KEY = _configured_secret_key
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
+ALLOWED_HOSTS = [host for host in config('ALLOWED_HOSTS', default='', cast=Csv()) if host]
+_raw_csrf_trusted_origins = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
+
+
+def _origin_has_hostname(origin: str) -> bool:
+    parsed = urlparse(origin)
+    return bool(parsed.hostname)
+
+
+CSRF_TRUSTED_ORIGINS = [
+    origin
+    for origin in _raw_csrf_trusted_origins
+    if origin and _origin_has_hostname(origin)
+]
 
 
 # Application definition
@@ -186,7 +199,11 @@ CSRF_COOKIE_HTTPONLY = False
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
+CORS_ALLOWED_ORIGINS = [
+    origin
+    for origin in config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
+    if origin and _origin_has_hostname(origin)
+]
 CORS_ALLOWED_ORIGIN_REGEXES = config('CORS_ALLOWED_ORIGIN_REGEXES', default='', cast=Csv())
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
