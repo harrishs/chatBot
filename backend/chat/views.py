@@ -179,6 +179,15 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     lookup_field = 'id'
     lookup_url_kwarg = 'pk'
 
+    def _get_chatbot_pk(self):
+        chatbot_id = self.kwargs.get('chatbot_pk')
+        if not chatbot_id:
+            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
+        try:
+            return int(chatbot_id)
+        except ValueError:
+            raise ValidationError({'chatbot': ['A valid integer is required.']})
+
     def _validate_credential(self, credential):
         if credential and credential.company != self.request.user.company:
             raise PermissionDenied("You cannot use credentials for a different company")
@@ -198,17 +207,14 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
         self._validate_credential(credential)
 
     def get_queryset(self):
-        chatbot_id = self.kwargs['chatbot_pk']
-        if not chatbot_id:
-            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
-        return JiraSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
-    
+        chatbot_pk = self._get_chatbot_pk()
+        return JiraSync.objects.filter(chatBot__id=chatbot_pk, chatBot__company=self.request.user.company)
+
     def create(self, request, *args, **kwargs):
         # Attach the chatbot manually since it's passed through the URL
-        chatbot_id = self.kwargs['chatbot_pk']
-
+        chatbot_pk = self._get_chatbot_pk()
         try:
-            chatBot = ChatBotInstance.objects.get(id=chatbot_id, company=request.user.company)
+            chatBot = ChatBotInstance.objects.get(id=chatbot_pk, company=request.user.company)
         except ChatBotInstance.DoesNotExist:
             raise PermissionDenied("Invalid chatbot or not in your company")
 
@@ -267,6 +273,15 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def _get_chatbot_pk(self):
+        chatbot_id = self.kwargs.get('chatbot_pk')
+        if not chatbot_id:
+            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
+        try:
+            return int(chatbot_id)
+        except ValueError:
+            raise ValidationError({'chatbot': ['A valid integer is required.']})
+
     def _validate_credential(self, credential):
         if credential and credential.company != self.request.user.company:
             raise PermissionDenied("You cannot use credentials for a different company")
@@ -286,17 +301,14 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
         self._validate_credential(credential)
 
     def get_queryset(self):
-        chatbot_id = self.kwargs['chatbot_pk']
-        if not chatbot_id:
-            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
-        return ConfluenceSync.objects.filter(chatBot__id=chatbot_id, chatBot__company=self.request.user.company)
-    
-    def create(self, request, *args, **kwargs):
-        chatbot_id = self.kwargs['chatbot_pk']
+        chatbot_pk = self._get_chatbot_pk()
+        return ConfluenceSync.objects.filter(chatBot__id=chatbot_pk, chatBot__company=self.request.user.company)
 
+    def create(self, request, *args, **kwargs):
+        chatbot_pk = self._get_chatbot_pk()
         try:
             chatBot = ChatBotInstance.objects.get(
-                id=chatbot_id,
+                id=chatbot_pk,
                 company=request.user.company
             )
         except ChatBotInstance.DoesNotExist:
@@ -416,15 +428,24 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
     serializer_class = GitRepoSyncSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def _get_chatbot_pk(self):
+        chatbot_id = self.kwargs.get('chatbot_pk')
+        if not chatbot_id:
+            raise PermissionDenied("Missing 'chatbot_id' in URL path.")
+        try:
+            return int(chatbot_id)
+        except ValueError:
+            raise ValidationError({'chatbot': ['A valid integer is required.']})
+
     def get_chatbot(self):
-        chatbot_id = self.kwargs['chatbot_pk']
-        return get_object_or_404(ChatBotInstance, id=chatbot_id, company=self.request.user.company)
-    
+        chatbot_pk = self._get_chatbot_pk()
+        return get_object_or_404(ChatBotInstance, id=chatbot_pk, company=self.request.user.company)
+
     def get_queryset(self):
-        chatbot_id = self.kwargs['chatbot_pk']
+        chatbot_pk = self._get_chatbot_pk()
         qs = GitRepoSync.objects.filter(chatBot__company=self.request.user.company)
-        if chatbot_id:
-            qs = qs.filter(chatBot__id=chatbot_id)
+        if chatbot_pk:
+            qs = qs.filter(chatBot__id=chatbot_pk)
         return qs
     
     def create(self, request, *args, **kwargs):
