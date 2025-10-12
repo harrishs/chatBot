@@ -373,9 +373,14 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
             raise ValidationError({'chatBot': ['This field is required.']})
 
         try:
+            chat_bot_pk = int(chat_bot_id)
+        except (TypeError, ValueError):
+            raise ValidationError({'chatBot': ['A valid integer is required.']})
+
+        try:
             return get_object_or_404(
                 ChatBotInstance,
-                pk=chat_bot_id,
+                pk=chat_bot_pk,
                 company=self.request.user.company,
             )
         except Http404:
