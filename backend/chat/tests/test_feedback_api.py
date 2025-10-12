@@ -61,5 +61,18 @@ class ChatFeedbackAPITests(APITestCase):
 
         response = self.client.post(self.url, payload, format='json')
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(ChatFeedback.objects.count(), 0)
+
+    def test_cannot_create_feedback_with_other_company_chatbot_alias(self):
+        payload = {
+            'question': 'Alias access check?',
+            'answer': 'Still no.',
+            'is_helpful': False,
+            'chatbot': self.other_chatbot.id,
+        }
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(ChatFeedback.objects.count(), 0)
