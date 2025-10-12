@@ -76,3 +76,34 @@ class ChatFeedbackAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(ChatFeedback.objects.count(), 0)
+
+    def test_create_feedback_rejects_non_integer_chatbot_value(self):
+        payload = {
+            'question': 'What is the support email?',
+            'answer': 'support@example.com',
+            'is_helpful': True,
+            'chatBot': 'not-a-number',
+        }
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data, {'chatBot': ['A valid integer is required.']})
+        self.assertEqual(ChatFeedback.objects.count(), 0)
+
+    def test_create_feedback_rejects_non_integer_chatbot_query_param(self):
+        payload = {
+            'question': 'How do I change my plan?',
+            'answer': 'Visit billing settings.',
+            'is_helpful': False,
+        }
+
+        response = self.client.post(
+            f"{self.url}?chatBot=invalid",
+            payload,
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data, {'chatBot': ['A valid integer is required.']})
+        self.assertEqual(ChatFeedback.objects.count(), 0)
