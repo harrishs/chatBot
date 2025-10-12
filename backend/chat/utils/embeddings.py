@@ -85,6 +85,14 @@ def search_documents(company_id, chatbot_id, query, top_k=5):
     # 1. Embed the query text
     query_embedding = embed_text(query)
 
+    # Ensure a positive slice window to avoid negative indices when slicing querysets
+    try:
+        top_k = int(top_k)
+    except (TypeError, ValueError):
+        top_k = 1
+    if top_k < 1:
+        top_k = 1
+
     # 2. Run similarity search using pgvector helpers
     base_queryset = Document.objects.filter(company_id=company_id, chatbot_id=chatbot_id)
 
