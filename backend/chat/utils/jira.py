@@ -1,12 +1,15 @@
 import logging
-from typing import Iterable, List, Tuple, Union
+from collections import defaultdict
+from typing import Dict, Iterable, List, Set, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from chat.encryption import decrypt_api_key
 from urllib.parse import urlparse
-from chat.models import JiraIssue, JiraComment, JiraSync
+from django.db.models import Q
+
+from chat.models import Document, JiraIssue, JiraComment, JiraSync
 from chat.utils.embeddings import save_document
 
 
@@ -156,7 +159,17 @@ def fetch_comments(base_url, issue_key, api_key, email):
 
     return comments
 
-def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]]]:
+def _delete_documents_for_source_ids(source: str, base_ids: Iterable[str]) -> int:
+    deleted = 0
+    for base_id in base_ids:
+        if base_id is None:
+            continue
+        conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
+        deleted += Document.objects.filter(source=source).filter(conditions).delete()[0]
+    return deleted
+
+
+def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraComment]]], Set[str], Dict[str, Set[str]]]:
     api_key = decrypt_api_key(sync.credential._api_key)
     project_key = extract_project_key(sync.board_url)
     base_url = get_base_domain(sync.board_url)
@@ -208,10 +221,14 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
             break
 
     processed: List[Tuple[JiraIssue, List[JiraComment]]] = []
+    remote_issue_keys: Set[str] = set()
+    remote_comment_ids: Dict[str, Set[str]] = defaultdict(set)
 
     for issue in issues:
         issue_key = issue["key"]
         fields = issue["fields"]
+
+        remote_issue_keys.add(issue_key)
 
         # Save or update the issue
         jira_issue, _ = JiraIssue.objects.update_or_create(
@@ -231,12 +248,33 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
         synced_comments: List[JiraComment] = []
         for comment in comments:
             plain_text = extract_plain_text_from_adf(comment.get("body"))
-            comment_obj, _ = JiraComment.objects.update_or_create(
-                issue=jira_issue,
-                content=plain_text if plain_text else "Unknown content",
-                created_at=comment["created"],
-                author=comment["author"]["displayName"]
-            )
+            comment_remote_id = str(comment.get("id")) if comment.get("id") is not None else None
+            author = comment["author"]["displayName"]
+            created_at = comment["created"]
+            content = plain_text if plain_text else "Unknown content"
+
+            if comment_remote_id:
+                comment_obj, _ = JiraComment.objects.update_or_create(
+                    issue=jira_issue,
+                    remote_id=comment_remote_id,
+                    defaults={
+                        "author": author,
+                        "content": content,
+                        "created_at": created_at,
+                    },
+                )
+                remote_comment_ids[issue_key].add(f"remote:{comment_remote_id}")
+            else:
+                comment_obj, _ = JiraComment.objects.update_or_create(
+                    issue=jira_issue,
+                    author=author,
+                    created_at=created_at,
+                    content=content,
+                    defaults={
+                        "remote_id": comment_remote_id,
+                    },
+                )
+                remote_comment_ids[issue_key].add(f"local:{comment_obj.pk}")
             synced_comments.append(comment_obj)
 
         processed.append((jira_issue, synced_comments))
@@ -249,7 +287,7 @@ def fetch_jira_issues(sync: JiraSync) -> List[Tuple[JiraIssue, List[JiraComment]
 
     logger.info("Fetched %s Jira issues for sync %s", len(processed), sync.pk)
 
-    return processed
+    return processed, remote_issue_keys, remote_comment_ids
 
 def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[JiraComment] | None = None):
     """
@@ -281,3 +319,62 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
             documents.extend(comment_documents)
 
     return documents
+
+
+def cleanup_removed_jira_content(
+    sync: JiraSync,
+    remote_issue_keys: Set[str],
+    remote_comment_tokens: Dict[str, Set[str]],
+) -> Tuple[int, int]:
+    deleted_issues = 0
+    deleted_comments = 0
+
+    existing_issues = JiraIssue.objects.filter(sync=sync)
+    issues_to_remove = list(existing_issues.exclude(issue_key__in=remote_issue_keys))
+
+    if issues_to_remove:
+        issue_ids = [issue.pk for issue in issues_to_remove]
+        issue_keys = [issue.issue_key for issue in issues_to_remove]
+
+        for issue in issues_to_remove:
+            comment_ids = list(issue.comments.values_list("id", flat=True))
+            if comment_ids:
+                comment_source_ids = [f"{issue.issue_key}_comment_{comment_id}" for comment_id in comment_ids]
+                deleted_comments += len(comment_ids)
+                _delete_documents_for_source_ids("jira_comment", comment_source_ids)
+
+        _delete_documents_for_source_ids("jira_issue", issue_keys)
+        deleted_issues = len(issue_ids)
+        existing_issues.filter(pk__in=issue_ids).delete()
+
+    remaining_issues = JiraIssue.objects.filter(sync=sync, issue_key__in=remote_issue_keys)
+
+    for issue in remaining_issues:
+        tokens_to_keep = remote_comment_tokens.get(issue.issue_key, set())
+        comment_qs = issue.comments.all()
+
+        if tokens_to_keep:
+            remote_ids_to_keep = {token.split(":", 1)[1] for token in tokens_to_keep if token.startswith("remote:")}
+            local_ids_to_keep = {
+                int(token.split(":", 1)[1])
+                for token in tokens_to_keep
+                if token.startswith("local:") and token.split(":", 1)[1].isdigit()
+            }
+
+            if remote_ids_to_keep:
+                comment_qs = comment_qs.exclude(remote_id__in=remote_ids_to_keep)
+            if local_ids_to_keep:
+                comment_qs = comment_qs.exclude(pk__in=local_ids_to_keep)
+
+        comments_to_delete = list(comment_qs)
+
+        if not comments_to_delete:
+            continue
+
+        for comment in comments_to_delete:
+            base_id = f"{issue.issue_key}_comment_{comment.pk}"
+            _delete_documents_for_source_ids("jira_comment", [base_id])
+        deleted_comments += len(comments_to_delete)
+        issue.comments.filter(pk__in=[comment.pk for comment in comments_to_delete]).delete()
+
+    return deleted_issues, deleted_comments

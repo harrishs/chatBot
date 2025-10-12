@@ -1,11 +1,13 @@
 import logging
-from typing import Iterable, List
+from typing import Iterable, List, Set, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
-from chat.models import ConfluencePage, ConfluenceSync
+from django.db.models import Q
+
+from chat.models import ConfluencePage, ConfluenceSync, Document
 from chat.encryption import decrypt_api_key
 from chat.utils.embeddings import save_document
 
@@ -54,7 +56,17 @@ def extract_space_key(space_url):
         logger.exception("Error extracting Confluence space key from URL")
     return ""
 
-def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
+def _delete_documents_for_source_ids(base_ids: Iterable[str]) -> int:
+    deleted = 0
+    for base_id in base_ids:
+        if base_id is None:
+            continue
+        conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
+        deleted += Document.objects.filter(source="confluence").filter(conditions).delete()[0]
+    return deleted
+
+
+def fetch_confluence_pages(sync: ConfluenceSync) -> Tuple[List[ConfluencePage], Set[str]]:
     try:
         api_key = decrypt_api_key(sync.credential._api_key)
         email = sync.credential.email
@@ -140,20 +152,33 @@ def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
         next_url = None
 
     processed: List[ConfluencePage] = []
+    remote_ids: Set[str] = set()
     for page in pages:
         title = page.get("title", "")
         content = page.get("body", {}).get("storage", {}).get("value", "")
         last_updated = page.get("version", {}).get("when", "")
         page_url = f"{base_url}/wiki{page.get('_links', {}).get('webui', '')}"
+        remote_id = str(page.get("id")) if page.get("id") is not None else None
+
+        if remote_id:
+            remote_ids.add(remote_id)
+
+        lookup_kwargs = {"sync": sync}
+        if remote_id:
+            lookup_kwargs["remote_id"] = remote_id
+        else:
+            lookup_kwargs["title"] = title
+
+        defaults = {
+            "title": title,
+            "content": content,
+            "url": page_url,
+            "last_updated": last_updated,
+        }
 
         page_obj, _ = ConfluencePage.objects.update_or_create(
-            sync=sync,
-            title=title,
-            defaults={
-                "content": content,
-                "url": page_url,
-                "last_updated": last_updated
-            }
+            defaults=defaults,
+            **lookup_kwargs,
         )
         processed.append(page_obj)
 
@@ -165,7 +190,7 @@ def fetch_confluence_pages(sync: ConfluenceSync) -> List[ConfluencePage]:
 
     logger.info("Fetched %s Confluence pages for sync %s", len(processed), sync.pk)
 
-    return processed
+    return processed, remote_ids
 
 
 def ingest_confluence_pages(sync: ConfluenceSync, pages: Iterable[ConfluencePage] | None = None) -> int:
@@ -182,3 +207,29 @@ def ingest_confluence_pages(sync: ConfluenceSync, pages: Iterable[ConfluencePage
         documents_created += len(docs)
 
     return documents_created
+
+
+def cleanup_removed_confluence_pages(
+    sync: ConfluenceSync,
+    processed_pages: Iterable[ConfluencePage],
+    remote_ids: Set[str],
+) -> int:
+    keep_page_ids = {page.pk for page in processed_pages}
+    remote_ids = {remote_id for remote_id in remote_ids if remote_id}
+
+    queryset = ConfluencePage.objects.filter(sync=sync)
+
+    if remote_ids:
+        queryset = queryset.exclude(remote_id__in=remote_ids)
+
+    if keep_page_ids:
+        queryset = queryset.exclude(pk__in=keep_page_ids)
+
+    pages_to_delete = list(queryset)
+    if not pages_to_delete:
+        return 0
+
+    _delete_documents_for_source_ids([page.pk for page in pages_to_delete])
+    ConfluencePage.objects.filter(pk__in=[page.pk for page in pages_to_delete]).delete()
+
+    return len(pages_to_delete)
