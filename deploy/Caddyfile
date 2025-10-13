@@ -11,16 +11,17 @@
     file_server
   }
 
-  # Proxy API/Admin/other dynamic requests to Django (Gunicorn) container
-  @api path /api* /admin/* /media*
-  reverse_proxy @api backend:8000
+  # --- Proxy all backend (Django) routes ---
+  # Match both the exact /admin and everything under it,
+  # same for /api and /media paths.
+  @backend path /api /api/* /admin /admin/* /media /media/*
+  reverse_proxy @backend backend:8000
 
-  # Everything else: serve the built frontend (Nginx) container
+  # Everything else goes to the frontend (React)
   reverse_proxy frontend:80
 
-  # Basic hardening
+  # Basic security headers
   header {
-    # CORS/frames/etc. adjust as needed
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
     X-Frame-Options "SAMEORIGIN"
