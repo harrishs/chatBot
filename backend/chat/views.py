@@ -23,6 +23,12 @@ from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 logger = logging.getLogger(__name__)
 
 
+ACTIVE_SYNC_STATUSES = (
+    SyncStatusMixin.Status.QUEUED,
+    SyncStatusMixin.Status.RUNNING,
+)
+
+
 def _build_sync_status_response(sync):
     job_id = getattr(sync, 'current_job_id', None)
     job_status = None
@@ -44,6 +50,22 @@ def _build_sync_status_response(sync):
         'job_status': job_status,
         'job_message': job_message,
     }
+
+
+def _has_active_sync_job(sync):
+    if sync.sync_status in ACTIVE_SYNC_STATUSES:
+        return True
+
+    job_id = getattr(sync, 'current_job_id', None)
+    if not job_id:
+        return False
+
+    try:
+        job = SyncJob.objects.get(pk=int(job_id))
+    except (ValueError, SyncJob.DoesNotExist):
+        return False
+
+    return job.status in ACTIVE_SYNC_STATUSES
 
 
 User = get_user_model()
@@ -243,14 +265,7 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        if (
-            sync.sync_status
-            in (
-                JiraSync.Status.QUEUED,
-                JiraSync.Status.RUNNING,
-            )
-            or sync.current_job_id
-        ):
+        if _has_active_sync_job(sync):
             return Response(
                 _build_sync_status_response(sync),
                 status=status.HTTP_202_ACCEPTED,
@@ -353,14 +368,7 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
-        if (
-            sync.sync_status
-            in (
-                ConfluenceSync.Status.QUEUED,
-                ConfluenceSync.Status.RUNNING,
-            )
-            or sync.current_job_id
-        ):
+        if _has_active_sync_job(sync):
             return Response(
                 _build_sync_status_response(sync),
                 status=status.HTTP_202_ACCEPTED,
@@ -494,14 +502,7 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         if sync.chatBot.company != request.user.company:
             raise PermissionDenied("You cannot sync a repo for a chatbot outside your company")
 
-        if (
-            sync.sync_status
-            in (
-                GitRepoSync.Status.QUEUED,
-                GitRepoSync.Status.RUNNING,
-            )
-            or sync.current_job_id
-        ):
+        if _has_active_sync_job(sync):
             return Response(
                 _build_sync_status_response(sync),
                 status=status.HTTP_202_ACCEPTED,
