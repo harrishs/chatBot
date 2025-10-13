@@ -1,9 +1,10 @@
 import logging
 import time
-from typing import Optional
+from typing import Iterable, Optional, Tuple, Type
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Model, Q
 from django.utils import timezone
 
 from chat.models import SyncJob, SyncStatusMixin, JiraSync, ConfluenceSync, GitRepoSync
@@ -26,6 +27,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS('Sync job worker started.'))
         while True:
+            self._enqueue_due_syncs()
             job = self._dequeue_job()
             if not job:
                 if run_once:
@@ -53,6 +55,72 @@ class Command(BaseCommand):
             job.started_at = timezone.now()
             job.save(update_fields=['status', 'status_message', 'started_at'])
             return job
+
+    def _enqueue_due_syncs(self) -> None:
+        now = timezone.now()
+        for model, job_type in self._iter_sync_models():
+            candidate_ids = (
+                model.objects.filter(sync_interval__in=SyncStatusMixin.AUTOMATIC_INTERVALS)
+                .filter(Q(next_sync_at__lte=now) | Q(next_sync_at__isnull=True))
+                .values_list('pk', flat=True)
+            )
+
+            for sync_id in candidate_ids:
+                self._enqueue_sync_if_due(model, job_type, sync_id, now)
+
+    def _iter_sync_models(self) -> Iterable[Tuple[Type[Model], str]]:
+        yield JiraSync, SyncJob.JobType.JIRA
+        yield ConfluenceSync, SyncJob.JobType.CONFLUENCE
+        yield GitRepoSync, SyncJob.JobType.GIT
+
+    def _enqueue_sync_if_due(
+        self,
+        model: Type[Model],
+        job_type: str,
+        sync_id: int,
+        now,
+    ) -> None:
+        with transaction.atomic():
+            sync = (
+                model.objects.select_for_update(skip_locked=True)
+                .filter(pk=sync_id)
+                .first()
+            )
+            if not sync:
+                return
+
+            if getattr(sync, 'sync_interval', 'manual') not in SyncStatusMixin.AUTOMATIC_INTERVALS:
+                if sync.next_sync_at is not None:
+                    sync.next_sync_at = None
+                    sync.save(update_fields=['next_sync_at'])
+                return
+
+            if sync.sync_status in (
+                SyncStatusMixin.Status.QUEUED,
+                SyncStatusMixin.Status.RUNNING,
+            ):
+                return
+
+            if sync.next_sync_at is None:
+                sync.update_next_sync_at(reference_time=now)
+                sync.save(update_fields=['next_sync_at'])
+
+            if not sync.next_sync_at or sync.next_sync_at > now:
+                return
+
+            job = SyncJob.objects.create(sync_type=job_type, sync_id=sync.pk)
+            sync.sync_status = SyncStatusMixin.Status.QUEUED
+            sync.sync_status_message = 'Sync job queued automatically.'
+            sync.current_job_id = str(job.pk)
+            sync.update_next_sync_at(reference_time=now, assume_started=True)
+            sync.save(
+                update_fields=[
+                    'sync_status',
+                    'sync_status_message',
+                    'current_job_id',
+                    'next_sync_at',
+                ]
+            )
 
     def _process_job(self, job: SyncJob) -> None:
         job_id = str(job.pk)

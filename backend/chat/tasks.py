@@ -31,7 +31,10 @@ def _set_status(sync, status, message, update_last_sync_time=False, job_id: Opti
     if update_last_sync_time:
         now = timezone.now()
         update_kwargs['last_sync_time'] = now
+        next_sync_at = sync.update_next_sync_at(reference_time=now, assume_started=True)
+        update_kwargs['next_sync_at'] = next_sync_at
         fields_to_set.append('last_sync_time')
+        fields_to_set.append('next_sync_at')
     if job_id is not None:
         update_kwargs['current_job_id'] = job_id
         fields_to_set.append('current_job_id')

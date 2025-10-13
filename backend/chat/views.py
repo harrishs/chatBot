@@ -15,6 +15,7 @@ from chat.utils.rag import generate_answer
 from django.contrib.auth import authenticate, login, logout
 from django.http import Http404
 from django.conf import settings
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 
@@ -252,7 +253,15 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
             sync.sync_status = JiraSync.Status.QUEUED
             sync.sync_status_message = 'Sync job queued.'
             sync.current_job_id = str(job.id)
-            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
+            sync.update_next_sync_at(reference_time=timezone.now(), assume_started=True)
+            sync.save(
+                update_fields=[
+                    'sync_status',
+                    'sync_status_message',
+                    'current_job_id',
+                    'next_sync_at',
+                ]
+            )
         return Response(
             {
                 'job_id': str(job.id),
@@ -346,7 +355,15 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
             sync.sync_status = ConfluenceSync.Status.QUEUED
             sync.sync_status_message = 'Sync job queued.'
             sync.current_job_id = str(job.id)
-            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
+            sync.update_next_sync_at(reference_time=timezone.now(), assume_started=True)
+            sync.save(
+                update_fields=[
+                    'sync_status',
+                    'sync_status_message',
+                    'current_job_id',
+                    'next_sync_at',
+                ]
+            )
         return Response(
             {
                 'job_id': str(job.id),
@@ -471,7 +488,15 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
             sync.sync_status = GitRepoSync.Status.QUEUED
             sync.sync_status_message = 'Sync job queued.'
             sync.current_job_id = str(job.id)
-            sync.save(update_fields=['sync_status', 'sync_status_message', 'current_job_id'])
+            sync.update_next_sync_at(reference_time=timezone.now(), assume_started=True)
+            sync.save(
+                update_fields=[
+                    'sync_status',
+                    'sync_status_message',
+                    'current_job_id',
+                    'next_sync_at',
+                ]
+            )
         return Response(
             {
                 'job_id': str(job.id),

@@ -97,6 +97,7 @@ class JiraSyncSerializer(serializers.ModelSerializer):
             'id',
             'board_url',
             'last_sync_time',
+            'next_sync_at',
             'sync_status',
             'sync_status_message',
             'current_job_id',
@@ -104,7 +105,13 @@ class JiraSyncSerializer(serializers.ModelSerializer):
             'credential_id',
             'sync_interval',
         ]
-        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
+        read_only_fields = (
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
+            'last_sync_time',
+            'next_sync_at',
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -129,6 +136,7 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
             'id',
             'space_url',
             'last_sync_time',
+            'next_sync_at',
             'sync_status',
             'sync_status_message',
             'current_job_id',
@@ -136,7 +144,13 @@ class ConfluenceSyncSerializer(serializers.ModelSerializer):
             'credential_id',
             'sync_interval',
         ]
-        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
+        read_only_fields = (
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
+            'last_sync_time',
+            'next_sync_at',
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -198,6 +212,7 @@ class GitRepoSyncSerializer(serializers.ModelSerializer):
             'repo_full_name',
             'branch',
             'last_sync_time',
+            'next_sync_at',
             'sync_status',
             'sync_status_message',
             'current_job_id',
@@ -205,7 +220,13 @@ class GitRepoSyncSerializer(serializers.ModelSerializer):
             'credential',
             'credential_id',
         ]
-        read_only_fields = ('sync_status', 'sync_status_message', 'current_job_id', 'last_sync_time')
+        read_only_fields = (
+            'sync_status',
+            'sync_status_message',
+            'current_job_id',
+            'last_sync_time',
+            'next_sync_at',
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
