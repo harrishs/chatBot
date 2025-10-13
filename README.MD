@@ -4,9 +4,20 @@
 
 `docker-compose.prod.yml` and the production `Caddyfile` rely on a small set of
 environment variables so the stack can be reconfigured without editing source
-files. Define these in an `.env` file (automatically picked up by
-`docker-compose`) or export them in your shell before running the compose
-commands:
+files. Start by copying the provided templates and adjusting the values for
+your deployment:
+
+```bash
+cp backend/.env.production.example backend/.env.production
+cp .env.prod.example .env
+```
+
+The backend `.env.production` file is loaded by the `backend`, `worker`, and
+`db` services, while the root `.env` file seeds the compose variables used by
+Caddy and the frontend build.
+
+Populate the copied files (or export them in your shell) before running the
+production compose commands. The following variables are required:
 
 | Variable | Example | Purpose |
 | --- | --- | --- |
