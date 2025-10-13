@@ -243,6 +243,18 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
+        if (
+            sync.sync_status
+            in (
+                JiraSync.Status.QUEUED,
+                JiraSync.Status.RUNNING,
+            )
+            or sync.current_job_id
+        ):
+            return Response(
+                _build_sync_status_response(sync),
+                status=status.HTTP_202_ACCEPTED,
+            )
         with transaction.atomic():
             job = SyncJob.objects.create(
                 sync_type=SyncJob.JobType.JIRA,
@@ -263,11 +275,7 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
                 ]
             )
         return Response(
-            {
-                'job_id': str(job.id),
-                'status': sync.sync_status,
-                'message': sync.sync_status_message,
-            },
+            _build_sync_status_response(sync),
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -345,6 +353,18 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_now(self, request, chatbot_pk=None, pk=None):
         sync = self.get_object()
+        if (
+            sync.sync_status
+            in (
+                ConfluenceSync.Status.QUEUED,
+                ConfluenceSync.Status.RUNNING,
+            )
+            or sync.current_job_id
+        ):
+            return Response(
+                _build_sync_status_response(sync),
+                status=status.HTTP_202_ACCEPTED,
+            )
         with transaction.atomic():
             job = SyncJob.objects.create(
                 sync_type=SyncJob.JobType.CONFLUENCE,
@@ -365,11 +385,7 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
                 ]
             )
         return Response(
-            {
-                'job_id': str(job.id),
-                'status': sync.sync_status,
-                'message': sync.sync_status_message,
-            },
+            _build_sync_status_response(sync),
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -478,6 +494,19 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
         if sync.chatBot.company != request.user.company:
             raise PermissionDenied("You cannot sync a repo for a chatbot outside your company")
 
+        if (
+            sync.sync_status
+            in (
+                GitRepoSync.Status.QUEUED,
+                GitRepoSync.Status.RUNNING,
+            )
+            or sync.current_job_id
+        ):
+            return Response(
+                _build_sync_status_response(sync),
+                status=status.HTTP_202_ACCEPTED,
+            )
+
         with transaction.atomic():
             job = SyncJob.objects.create(
                 sync_type=SyncJob.JobType.GIT,
@@ -498,11 +527,7 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
                 ]
             )
         return Response(
-            {
-                'job_id': str(job.id),
-                'status': sync.sync_status,
-                'message': sync.sync_status_message,
-            },
+            _build_sync_status_response(sync),
             status=status.HTTP_202_ACCEPTED,
         )
 
