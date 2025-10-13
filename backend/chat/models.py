@@ -1,7 +1,12 @@
-from django.db import models
+from datetime import timedelta
+from typing import Optional
+
 from django.contrib.auth.models import AbstractUser
-from chat.encryption import fernet
+from django.db import models
+from django.utils import timezone
 from pgvector.django import VectorField
+
+from chat.encryption import fernet
 
 
 class SyncStatusMixin(models.Model):
@@ -19,9 +24,64 @@ class SyncStatusMixin(models.Model):
     )
     sync_status_message = models.TextField(blank=True)
     current_job_id = models.CharField(max_length=255, blank=True, null=True)
+    next_sync_at = models.DateTimeField(blank=True, null=True, db_index=True)
+
+    AUTOMATIC_INTERVALS = ('daily', 'weekly', 'monthly')
 
     class Meta:
         abstract = True
+
+    def _get_interval_delta(self) -> Optional[timedelta]:
+        interval = getattr(self, 'sync_interval', None)
+        if interval == 'daily':
+            return timedelta(days=1)
+        if interval == 'weekly':
+            return timedelta(weeks=1)
+        if interval == 'monthly':
+            # Approximate a month as 30 days for scheduling purposes.
+            return timedelta(days=30)
+        return None
+
+    def next_due_at(self, reference_time=None):
+        """Return when this sync should run next.
+
+        A ``None`` return value indicates that the sync is not scheduled
+        automatically (e.g., manual interval).
+        """
+
+        delta = self._get_interval_delta()
+        if delta is None:
+            return None
+
+        last_sync_time = getattr(self, 'last_sync_time', None)
+        if last_sync_time:
+            return last_sync_time + delta
+
+        reference = reference_time or timezone.now()
+        return reference
+
+    def update_next_sync_at(self, reference_time=None, assume_started=False):
+        """Update ``next_sync_at`` based on the sync interval.
+
+        When ``assume_started`` is ``True`` the next run is scheduled relative
+        to ``reference_time`` (or ``timezone.now()`` when omitted). This is
+        used when a sync run has been enqueued so that additional workers do
+        not queue duplicate jobs.
+        """
+
+        delta = self._get_interval_delta()
+        if delta is None:
+            self.next_sync_at = None
+            return self.next_sync_at
+
+        if assume_started:
+            base_time = reference_time or timezone.now()
+            self.next_sync_at = base_time + delta
+            return self.next_sync_at
+
+        next_due = self.next_due_at(reference_time=reference_time)
+        self.next_sync_at = next_due
+        return self.next_sync_at
 
 
 class SyncJob(models.Model):

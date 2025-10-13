@@ -73,6 +73,7 @@ class SyncIngestionTests(APITestCase):
                 "Processed 1 issues and ingested 2 documents. Deleted 0 issues and 0 comments."
             )
             sync_obj.last_sync_time = timezone.now()
+            sync_obj.update_next_sync_at(reference_time=sync_obj.last_sync_time)
             if job_id:
                 sync_obj.current_job_id = job_id
             sync_obj.save(
@@ -80,6 +81,7 @@ class SyncIngestionTests(APITestCase):
                     "sync_status",
                     "sync_status_message",
                     "last_sync_time",
+                    "next_sync_at",
                     "current_job_id",
                 ]
             )
@@ -155,6 +157,7 @@ class SyncIngestionTests(APITestCase):
                 "Processed 1 pages and ingested 1 documents. Deleted 0 pages."
             )
             sync_obj.last_sync_time = timezone.now()
+            sync_obj.update_next_sync_at(reference_time=sync_obj.last_sync_time)
             if job_id:
                 sync_obj.current_job_id = job_id
             sync_obj.save(
@@ -162,6 +165,7 @@ class SyncIngestionTests(APITestCase):
                     "sync_status",
                     "sync_status_message",
                     "last_sync_time",
+                    "next_sync_at",
                     "current_job_id",
                 ]
             )
@@ -250,6 +254,7 @@ class SyncIngestionTests(APITestCase):
                 "Processed 1 files and ingested 1 documents. Deleted 0 files."
             )
             sync_obj.last_sync_time = timezone.now()
+            sync_obj.update_next_sync_at(reference_time=sync_obj.last_sync_time)
             if job_id:
                 sync_obj.current_job_id = job_id
             sync_obj.save(
@@ -257,6 +262,7 @@ class SyncIngestionTests(APITestCase):
                     "sync_status",
                     "sync_status_message",
                     "last_sync_time",
+                    "next_sync_at",
                     "current_job_id",
                 ]
             )
