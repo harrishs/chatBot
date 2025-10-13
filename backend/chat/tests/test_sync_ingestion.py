@@ -132,6 +132,72 @@ class SyncIngestionTests(APITestCase):
         )
         self.assertEqual(mock_embed_text.call_count, 2)
 
+    def test_sync_now_returns_existing_job_when_already_queued(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+        )
+
+        url = f"{self.api_prefix}/chatBots/{self.chatbot.pk}/jiraSyncs/{sync.pk}/sync_now/"
+
+        first_response = self.client.post(url)
+        self.assertEqual(first_response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(SyncJob.objects.count(), 1)
+        first_job_id = first_response.data["job_id"]
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.sync_status, JiraSync.Status.QUEUED)
+        self.assertEqual(sync.current_job_id, str(first_job_id))
+
+        second_response = self.client.post(url)
+        self.assertEqual(second_response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(second_response.data["job_id"], str(first_job_id))
+        self.assertEqual(second_response.data["job_status"], SyncStatusMixin.Status.QUEUED)
+        self.assertEqual(second_response.data["status"], JiraSync.Status.QUEUED)
+
+        self.assertEqual(SyncJob.objects.count(), 1)
+        sync.refresh_from_db()
+        self.assertEqual(sync.current_job_id, str(first_job_id))
+        self.assertEqual(sync.sync_status, JiraSync.Status.QUEUED)
+
+    def test_sync_now_allows_new_job_after_completion(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+        )
+
+        url = f"{self.api_prefix}/chatBots/{self.chatbot.pk}/jiraSyncs/{sync.pk}/sync_now/"
+
+        first_response = self.client.post(url)
+        self.assertEqual(first_response.status_code, status.HTTP_202_ACCEPTED)
+        first_job_id = first_response.data["job_id"]
+
+        job = SyncJob.objects.get(pk=int(first_job_id))
+        job.status = SyncStatusMixin.Status.SUCCEEDED
+        job.status_message = "Finished successfully."
+        job.save(update_fields=["status", "status_message"])
+
+        sync.refresh_from_db()
+        sync.sync_status = JiraSync.Status.SUCCEEDED
+        sync.sync_status_message = "Completed."
+        sync.last_sync_time = timezone.now()
+        sync.save(
+            update_fields=[
+                "sync_status",
+                "sync_status_message",
+                "last_sync_time",
+            ]
+        )
+
+        second_response = self.client.post(url)
+        self.assertEqual(second_response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertNotEqual(second_response.data["job_id"], str(first_job_id))
+        self.assertEqual(SyncJob.objects.count(), 2)
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.current_job_id, str(second_response.data["job_id"]))
+        self.assertEqual(sync.sync_status, JiraSync.Status.QUEUED)
+
     @patch("chat.management.commands.process_sync_jobs.run_confluence_sync")
     @patch("chat.utils.embeddings.embed_text", return_value=[0.2] * 1536)
     def test_confluence_sync_now_creates_documents(self, mock_embed_text, mock_run_confluence_sync):
