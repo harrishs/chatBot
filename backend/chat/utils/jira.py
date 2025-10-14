@@ -1,6 +1,7 @@
+import json
 import logging
 from collections import defaultdict
-from typing import Dict, Iterable, List, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -16,6 +17,110 @@ from chat.utils.embeddings import save_document
 logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = (5, 30)
+
+
+_SENSITIVE_SUBSTRINGS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "password",
+    "secret",
+    "token",
+}
+
+
+def _format_context(context: Optional[Mapping[str, Any]]) -> str:
+    if not context:
+        return ""
+    parts = [f"{key}={value}" for key, value in context.items() if value is not None]
+    if not parts:
+        return ""
+    return "[" + " ".join(parts) + "] "
+
+
+def _sanitize_string(value: str) -> str:
+    lower_value = value.lower()
+    if any(token in lower_value for token in _SENSITIVE_SUBSTRINGS):
+        return "***REDACTED***"
+    return value
+
+
+def _sanitize_for_logging(data: Any) -> Any:
+    if data is None:
+        return None
+    if isinstance(data, Mapping):
+        redacted: MutableMapping[Any, Any] = {}
+        for key, value in data.items():
+            if isinstance(key, str) and any(token in key.lower() for token in _SENSITIVE_SUBSTRINGS):
+                redacted[key] = "***REDACTED***"
+            else:
+                redacted[key] = _sanitize_for_logging(value)
+        return redacted
+    if isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
+        return [_sanitize_for_logging(item) for item in data]
+    if isinstance(data, (bytes, bytearray)):
+        return "<binary>"
+    if isinstance(data, str):
+        return _sanitize_string(data)
+    return data
+
+
+def _format_for_logging(data: Any, *, max_length: int = 512) -> Any:
+    sanitized = _sanitize_for_logging(data)
+    if sanitized is None:
+        return None
+    if isinstance(sanitized, (dict, list)):
+        try:
+            serialized = json.dumps(sanitized, sort_keys=True)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            serialized = repr(sanitized)
+    else:
+        serialized = str(sanitized)
+    if len(serialized) > max_length:
+        return f"{serialized[:max_length]}...(truncated)"
+    return serialized
+
+
+def _log_request_response(
+    method: str,
+    url: str,
+    *,
+    request_func: Callable[[], requests.Response],
+    params: Optional[Mapping[str, Any]] = None,
+    json_body: Any = None,
+    context: Optional[Mapping[str, Any]] = None,
+    response_max_length: int = 512,
+) -> requests.Response:
+    context_str = _format_context(context)
+    logger.debug(
+        "Jira API %sRequest %s %s params=%s json=%s",
+        context_str,
+        method.upper(),
+        url,
+        _format_for_logging(params),
+        _format_for_logging(json_body),
+    )
+    try:
+        response = request_func()
+    except Exception:
+        logger.debug(
+            "Jira API %sRequest %s %s failed before receiving a response",
+            context_str,
+            method.upper(),
+            url,
+        )
+        raise
+
+    logger.debug(
+        "Jira API %sResponse %s %s status=%s body=%s",
+        context_str,
+        method.upper(),
+        url,
+        getattr(response, "status_code", "unknown"),
+        _format_for_logging(response.text, max_length=response_max_length),
+    )
+    return response
 
 
 def _build_session() -> requests.Session:
@@ -130,29 +235,26 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: Ji
     filter_id: str | int | None = None
 
     board_metadata_url = f"{base_url}/rest/agile/1.0/board/{board_id}"
-    logger.debug(
-        "Sync %s: GET %s board_id=%s",
-        sync.pk,
-        board_metadata_url,
-        board_id,
-    )
     try:
-        response = _SESSION.get(
+        response = _log_request_response(
+            "GET",
             board_metadata_url,
-            headers=headers,
-            auth=auth,
-            timeout=_REQUEST_TIMEOUT,
+            request_func=lambda: _SESSION.get(
+                board_metadata_url,
+                headers=headers,
+                auth=auth,
+                timeout=_REQUEST_TIMEOUT,
+            ),
+            context={
+                "sync_id": sync.pk,
+                "job_id": sync.current_job_id,
+                "board_id": board_id,
+            },
         )
         response.raise_for_status()
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Failed to fetch Jira board metadata")
     else:
-        logger.debug(
-            "Sync %s: Response %s status=%s",
-            sync.pk,
-            board_metadata_url,
-            response.status_code,
-        )
         try:
             payload = response.json() or {}
         except ValueError:
@@ -163,8 +265,9 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: Ji
                 filter_config = payload.get("filter") or {}
                 filter_id = filter_config.get("id")
             logger.debug(
-                "Sync %s: Board metadata filter_id=%s",
+                "Sync %s (job=%s): Board metadata filter_id=%s",
                 sync.pk,
+                sync.current_job_id,
                 filter_id,
             )
 
@@ -173,30 +276,27 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: Ji
         filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
     else:
         config_url = f"{base_url}/rest/agile/1.0/board/{board_id}/configuration"
-        logger.debug(
-            "Sync %s: GET %s board_id=%s",
-            sync.pk,
-            config_url,
-            board_id,
-        )
         try:
-            response = _SESSION.get(
+            response = _log_request_response(
+                "GET",
                 config_url,
-                headers=headers,
-                auth=auth,
-                timeout=_REQUEST_TIMEOUT,
+                request_func=lambda: _SESSION.get(
+                    config_url,
+                    headers=headers,
+                    auth=auth,
+                    timeout=_REQUEST_TIMEOUT,
+                ),
+                context={
+                    "sync_id": sync.pk,
+                    "job_id": sync.current_job_id,
+                    "board_id": board_id,
+                },
             )
             response.raise_for_status()
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to fetch Jira board configuration")
             return None
 
-        logger.debug(
-            "Sync %s: Response %s status=%s",
-            sync.pk,
-            config_url,
-            response.status_code,
-        )
         try:
             payload = response.json() or {}
         except ValueError:
@@ -210,8 +310,9 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: Ji
             if filter_id:
                 filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
         logger.debug(
-            "Sync %s: Board configuration filter_id=%s filter_url=%s",
+            "Sync %s (job=%s): Board configuration filter_id=%s filter_url=%s",
             sync.pk,
+            sync.current_job_id,
             filter_id,
             filter_url,
         )
@@ -219,30 +320,28 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: Ji
     if not filter_url:
         return None
 
-    logger.debug(
-        "Sync %s: GET %s filter_id=%s",
-        sync.pk,
-        filter_url,
-        filter_id,
-    )
     try:
-        filter_response = _SESSION.get(
+        filter_response = _log_request_response(
+            "GET",
             filter_url,
-            headers=headers,
-            auth=auth,
-            timeout=_REQUEST_TIMEOUT,
+            request_func=lambda: _SESSION.get(
+                filter_url,
+                headers=headers,
+                auth=auth,
+                timeout=_REQUEST_TIMEOUT,
+            ),
+            context={
+                "sync_id": sync.pk,
+                "job_id": sync.current_job_id,
+                "board_id": board_id,
+                "filter_id": filter_id,
+            },
         )
         filter_response.raise_for_status()
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Failed to fetch Jira board filter details")
         return None
 
-    logger.debug(
-        "Sync %s: Response %s status=%s",
-        sync.pk,
-        filter_url,
-        filter_response.status_code,
-    )
     try:
         filter_payload = filter_response.json() or {}
     except ValueError:
@@ -271,43 +370,41 @@ def fetch_comments(base_url, issue_key, api_key, email, sync: JiraSync):
 
     while True:
         params = {"startAt": start_at, "maxResults": max_results}
-        logger.debug(
-            "Sync %s Issue %s: GET %s params=%s",
-            sync.pk,
-            issue_key,
+        response = _log_request_response(
+            "GET",
             url,
-            params,
-        )
-        response = _SESSION.get(
-            url,
-            headers=headers,
-            auth=auth,
-            timeout=_REQUEST_TIMEOUT,
+            request_func=lambda: _SESSION.get(
+                url,
+                headers=headers,
+                auth=auth,
+                timeout=_REQUEST_TIMEOUT,
+                params=params,
+            ),
             params=params,
+            context={
+                "sync_id": sync.pk,
+                "job_id": sync.current_job_id,
+                "issue_key": issue_key,
+            },
         )
         response.raise_for_status()
-        logger.debug(
-            "Sync %s Issue %s: Response %s status=%s",
-            sync.pk,
-            issue_key,
-            url,
-            response.status_code,
-        )
         payload = response.json()
 
         batch = payload.get("comments", []) or []
         if not batch:
             logger.warning(
-                "Sync %s Issue %s: Empty Jira comments batch params=%s",
+                "Sync %s (job=%s) Issue %s: Empty Jira comments batch params=%s",
                 sync.pk,
+                sync.current_job_id,
                 issue_key,
                 params,
             )
             break
 
         logger.debug(
-            "Sync %s Issue %s: Received %s comments (startAt=%s maxResults=%s)",
+            "Sync %s (job=%s) Issue %s: Received %s comments (startAt=%s maxResults=%s)",
             sync.pk,
+            sync.current_job_id,
             issue_key,
             len(batch),
             params["startAt"],
@@ -357,8 +454,9 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
     board_filter_jql = fetch_board_filter_jql(base_url, board_id, auth, headers, sync)
     jql_query = board_filter_jql or f"project={project_key}"
     logger.debug(
-        "Sync %s: Using JQL query '%s' (board_id=%s)",
+        "Sync %s (job=%s): Using JQL query '%s' (board_id=%s)",
         sync.pk,
+        sync.current_job_id,
         jql_query,
         board_id,
     )
@@ -374,27 +472,24 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         }
         if next_page_token:
             body["nextPageToken"] = next_page_token
-        logger.debug(
-            "Sync %s: POST %s body={maxResults=%s,nextPageToken=%s}",
-            sync.pk,
+        response = _log_request_response(
+            "POST",
             issue_url,
-            body["maxResults"],
-            body.get("nextPageToken"),
-        )
-        response = _SESSION.post(
-            issue_url,
-            headers=headers,
-            auth=auth,
-            timeout=_REQUEST_TIMEOUT,
-            json=body,
+            request_func=lambda: _SESSION.post(
+                issue_url,
+                headers=headers,
+                auth=auth,
+                timeout=_REQUEST_TIMEOUT,
+                json=body,
+            ),
+            json_body=body,
+            context={
+                "sync_id": sync.pk,
+                "job_id": sync.current_job_id,
+                "board_id": board_id,
+            },
         )
         response.raise_for_status()
-        logger.debug(
-            "Sync %s: Response %s status=%s",
-            sync.pk,
-            issue_url,
-            response.status_code,
-        )
         payload = response.json() or {}
 
         data = payload.get("data")
@@ -403,8 +498,9 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         batch = page.get("issues", []) or []
         if not batch:
             logger.warning(
-                "Sync %s: Empty Jira issues batch jql='%s' maxResults=%s nextPageToken=%s",
+                "Sync %s (job=%s): Empty Jira issues batch jql='%s' maxResults=%s nextPageToken=%s",
                 sync.pk,
+                sync.current_job_id,
                 jql_query,
                 body["maxResults"],
                 body.get("nextPageToken"),
@@ -412,8 +508,9 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
             break
 
         logger.debug(
-            "Sync %s: Received %s issues (maxResults=%s nextPageToken=%s)",
+            "Sync %s (job=%s): Received %s issues (maxResults=%s nextPageToken=%s)",
             sync.pk,
+            sync.current_job_id,
             len(batch),
             page.get("maxResults", body["maxResults"]),
             payload.get("nextPageToken") or page.get("nextPageToken"),
@@ -500,7 +597,12 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         sync.last_sync_time = timezone.now()
         sync.save(update_fields=["last_sync_time"])
 
-    logger.info("Fetched %s Jira issues for sync %s", len(processed), sync.pk)
+    logger.info(
+        "Fetched %s Jira issues for sync %s (job=%s)",
+        len(processed),
+        sync.pk,
+        sync.current_job_id,
+    )
 
     return processed, remote_issue_keys, remote_comment_ids
 
