@@ -537,21 +537,55 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
     remote_comment_ids: Dict[str, Set[str]] = defaultdict(set)
 
     for issue in issues:
-        issue_key = issue["key"]
-        fields = issue["fields"]
+        if not isinstance(issue, Mapping):
+            logger.warning(
+                "Sync %s (job=%s): Skipping Jira issue with unexpected type %s: %s",
+                sync.pk,
+                sync.current_job_id,
+                type(issue).__name__,
+                _format_for_logging(issue),
+            )
+            continue
+
+        issue_key = issue.get("key")
+        fields = issue.get("fields")
+
+        if not issue_key or not isinstance(fields, Mapping):
+            logger.warning(
+                "Sync %s (job=%s): Skipping Jira issue missing required data: %s",
+                sync.pk,
+                sync.current_job_id,
+                _format_for_logging(issue),
+            )
+            continue
 
         remote_issue_keys.add(issue_key)
+
+        summary = fields.get("summary", "")
+        description = fields.get("description", "") or ""
+        status_info = fields.get("status") or {}
+        status_name = status_info.get("name", "") if isinstance(status_info, Mapping) else ""
+        created_at = fields.get("created")
+        updated_at = fields.get("updated")
+
+        if not status_name:
+            logger.warning(
+                "Sync %s (job=%s): Jira issue %s missing status name; defaulting to empty string",
+                sync.pk,
+                sync.current_job_id,
+                issue_key,
+            )
 
         # Save or update the issue
         jira_issue, _ = JiraIssue.objects.update_or_create(
             sync=sync,
             issue_key=issue_key,
             defaults={
-                "summary": fields["summary"],
-                "description": fields.get("description", ""),
-                "status": fields["status"]["name"],
-                "created_at": fields["created"],
-                "updated_at": fields["updated"]
+                "summary": summary,
+                "description": description,
+                "status": status_name,
+                "created_at": created_at,
+                "updated_at": updated_at,
             }
         )
 
