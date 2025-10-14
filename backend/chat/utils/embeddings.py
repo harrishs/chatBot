@@ -1,3 +1,6 @@
+import logging
+import time
+
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -11,6 +14,8 @@ from django.db import connection
 from pgvector.django import CosineDistance
 from math import sqrt
 
+
+logger = logging.getLogger(__name__)
 
 _shared_openai_client = None
 
@@ -34,17 +39,37 @@ def embed_text(text: str) -> list:
     """
     client = get_openai_client()
 
-    try:
-        response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text,
-        )
-    except RateLimitError as exc:
-        raise RuntimeError("OpenAI rate limit exceeded while generating embeddings") from exc
-    except (APIConnectionError, APITimeoutError) as exc:
-        raise RuntimeError("Failed to reach OpenAI while generating embeddings") from exc
+    max_attempts = 6
 
-    return response.data[0].embedding
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text,
+            )
+            return response.data[0].embedding
+        except RateLimitError as exc:
+            if attempt < max_attempts:
+                logger.warning(
+                    "OpenAI rate limit encountered while generating embeddings (attempt %d/%d). "
+                    "Retrying after 300 seconds.",
+                    attempt,
+                    max_attempts,
+                )
+                time.sleep(300)
+                continue
+
+            final_message = getattr(exc, "message", str(exc))
+            logger.error(
+                "OpenAI rate limit persisted after %d attempts while generating embeddings: %s",
+                max_attempts,
+                final_message,
+            )
+            raise RuntimeError(
+                "OpenAI embeddings sync failed after repeated rate limit errors; aborting job."
+            ) from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            raise RuntimeError("Failed to reach OpenAI while generating embeddings") from exc
 
 def chunk_text(text, max_tokens=1000):
     max_chars = max_tokens * 4
