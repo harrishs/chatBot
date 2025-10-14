@@ -175,7 +175,7 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
     base_url = get_base_domain(sync.board_url)
     email = sync.credential.email
 
-    issue_url = f"{base_url}/rest/api/3/search"
+    issue_url = f"{base_url}/rest/api/3/search/jql"
     auth = requests.auth.HTTPBasicAuth(email, api_key)
     headers = {
         "Accept": "application/json"
@@ -186,33 +186,37 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
     max_results = 50
 
     while True:
-        params = {
+        body = {
             "jql": f"project={project_key}",
             "startAt": start_at,
             "maxResults": max_results,
         }
-        response = _SESSION.get(
+        response = _SESSION.post(
             issue_url,
             headers=headers,
             auth=auth,
             timeout=_REQUEST_TIMEOUT,
-            params=params,
+            json=body,
         )
         response.raise_for_status()
-        payload = response.json()
-        batch = payload.get("issues", []) or []
+        payload = response.json() or {}
+
+        page = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+
+        batch = page.get("issues", []) or []
         if not batch:
             break
 
         issues.extend(batch)
 
-        if payload.get("isLast") is True:
+        if page.get("isLast") is True:
             break
 
         batch_size = len(batch)
-        total = payload.get("total")
-        max_results = payload.get("maxResults", max_results) or max_results
-        start_at = payload.get("startAt", start_at) + batch_size
+        total = page.get("total")
+        max_results = page.get("maxResults", max_results) or max_results
+        start_value = page.get("startAt", start_at)
+        start_at = (start_value if isinstance(start_value, int) else start_at) + batch_size
 
         if total is not None and len(issues) >= total:
             break
