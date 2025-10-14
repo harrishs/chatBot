@@ -64,37 +64,38 @@ class SourcePaginationTests(TestCase):
         )
 
         issue_pages = {
-            0: {
-                "startAt": 0,
-                "maxResults": 2,
-                "total": 3,
-                "issues": [
-                    {
-                        "id": "1",
-                        "key": "TEST-1",
-                        "fields": {
-                            "summary": "Issue one",
-                            "description": "First issue",
-                            "status": {"name": "To Do"},
-                            "created": "2024-01-01T00:00:00.000+0000",
-                            "updated": "2024-01-02T00:00:00.000+0000",
+            None: {
+                "data": {
+                    "maxResults": 2,
+                    "total": 3,
+                    "nextPageToken": "page-2",
+                    "issues": [
+                        {
+                            "id": "1",
+                            "key": "TEST-1",
+                            "fields": {
+                                "summary": "Issue one",
+                                "description": "First issue",
+                                "status": {"name": "To Do"},
+                                "created": "2024-01-01T00:00:00.000+0000",
+                                "updated": "2024-01-02T00:00:00.000+0000",
+                            },
                         },
-                    },
-                    {
-                        "id": "2",
-                        "key": "TEST-2",
-                        "fields": {
-                            "summary": "Issue two",
-                            "description": "Second issue",
-                            "status": {"name": "In Progress"},
-                            "created": "2024-01-03T00:00:00.000+0000",
-                            "updated": "2024-01-04T00:00:00.000+0000",
+                        {
+                            "id": "2",
+                            "key": "TEST-2",
+                            "fields": {
+                                "summary": "Issue two",
+                                "description": "Second issue",
+                                "status": {"name": "In Progress"},
+                                "created": "2024-01-03T00:00:00.000+0000",
+                                "updated": "2024-01-04T00:00:00.000+0000",
+                            },
                         },
-                    },
-                ],
+                    ],
+                },
             },
-            2: {
-                "startAt": 2,
+            "page-2": {
                 "maxResults": 2,
                 "total": 3,
                 "isLast": True,
@@ -188,8 +189,10 @@ class SourcePaginationTests(TestCase):
         def fake_post(url, *_, **kwargs):
             body = kwargs.get("json") or {}
             if "/rest/api/3/search/jql" in url:
-                start = body.get("startAt", 0)
-                return DummyResponse(issue_pages.get(start, {"issues": []}))
+                self.assertNotIn("startAt", body)
+                token = body.get("nextPageToken")
+                self.assertIn(token, issue_pages)
+                return DummyResponse(issue_pages[token])
             raise AssertionError(f"Unexpected URL {url}")
 
         with patch("chat.utils.jira._SESSION.get", side_effect=fake_get), patch(
