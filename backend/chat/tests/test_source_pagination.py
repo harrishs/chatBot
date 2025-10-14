@@ -63,6 +63,7 @@ class SourcePaginationTests(TestCase):
             credential=self.credential,
         )
 
+        board_config_calls = []
         issue_pages = {
             None: {
                 "data": {
@@ -180,6 +181,9 @@ class SourcePaginationTests(TestCase):
 
         def fake_get(url, *_, **kwargs):
             params = kwargs.get("params") or {}
+            if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
+                board_config_calls.append(url)
+                return DummyResponse({"filter": {}})
             if "/comment" in url:
                 issue_key = url.split("/issue/")[1].split("/")[0]
                 start = params.get("startAt", 0)
@@ -190,6 +194,7 @@ class SourcePaginationTests(TestCase):
             body = kwargs.get("json") or {}
             if "/rest/api/3/search/jql" in url:
                 self.assertNotIn("startAt", body)
+                self.assertEqual(body.get("jql"), "project=TEST")
                 token = body.get("nextPageToken")
                 self.assertIn(token, issue_pages)
                 return DummyResponse(issue_pages[token])
@@ -200,6 +205,7 @@ class SourcePaginationTests(TestCase):
         ):
             processed = fetch_jira_issues(sync)
 
+        self.assertTrue(board_config_calls)
         self.assertEqual(len(processed), 3)
         self.assertEqual(JiraIssue.objects.count(), 3)
         self.assertEqual(
@@ -208,6 +214,90 @@ class SourcePaginationTests(TestCase):
         )
         self.assertEqual(
             JiraComment.objects.filter(issue__issue_key="TEST-2").count(),
+            1,
+        )
+
+    def test_fetch_jira_issues_uses_board_filter_jql(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+            credential=self.credential,
+        )
+
+        board_filter_jql = 'project in ("ALPHA", "BETA") AND status != "Done"'
+        issue_pages = {
+            None: {
+                "issues": [
+                    {
+                        "id": "1",
+                        "key": "TEST-1",
+                        "fields": {
+                            "summary": "Issue one",
+                            "description": "First issue",
+                            "status": {"name": "To Do"},
+                            "created": "2024-01-01T00:00:00.000+0000",
+                            "updated": "2024-01-02T00:00:00.000+0000",
+                        },
+                    }
+                ],
+                "isLast": True,
+                "maxResults": 50,
+                "total": 1,
+            }
+        }
+
+        comment_pages = {
+            "TEST-1": {
+                0: {
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "total": 1,
+                    "isLast": True,
+                    "comments": [
+                        {
+                            "id": "c1",
+                            "created": "2024-01-02T01:00:00.000+0000",
+                            "author": {"displayName": "Alice"},
+                            "body": {"type": "doc", "content": []},
+                        }
+                    ],
+                }
+            }
+        }
+
+        board_config_calls = []
+
+        def fake_get(url, *_, **kwargs):
+            params = kwargs.get("params") or {}
+            if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
+                board_config_calls.append(url)
+                return DummyResponse({"filter": {"query": board_filter_jql}})
+            if "/comment" in url:
+                issue_key = url.split("/issue/")[1].split("/")[0]
+                start = params.get("startAt", 0)
+                return DummyResponse(comment_pages[issue_key].get(start, {"comments": []}))
+            raise AssertionError(f"Unexpected URL {url}")
+
+        def fake_post(url, *_, **kwargs):
+            body = kwargs.get("json") or {}
+            if "/rest/api/3/search/jql" in url:
+                self.assertEqual(body.get("jql"), board_filter_jql)
+                token = body.get("nextPageToken")
+                self.assertIn(token, issue_pages)
+                return DummyResponse(issue_pages[token])
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch("chat.utils.jira._SESSION.get", side_effect=fake_get), patch(
+            "chat.utils.jira._SESSION.post", side_effect=fake_post
+        ):
+            processed_bundle = fetch_jira_issues(sync)
+
+        self.assertTrue(board_config_calls)
+        issues, _, _ = processed_bundle
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(JiraIssue.objects.count(), 1)
+        self.assertEqual(
+            JiraComment.objects.filter(issue__issue_key="TEST-1").count(),
             1,
         )
 
