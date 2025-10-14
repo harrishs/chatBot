@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Iterable, List, Set, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -11,10 +12,117 @@ from chat.models import ConfluencePage, ConfluenceSync, Document
 from chat.encryption import decrypt_api_key
 from chat.utils.embeddings import save_document
 
-
 logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = (5, 30)
+
+_SENSITIVE_SUBSTRINGS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "password",
+    "secret",
+    "token",
+}
+
+
+def _format_context(context: Optional[Mapping[str, Any]]) -> str:
+    if not context:
+        return ""
+    parts = [f"{key}={value}" for key, value in context.items() if value is not None]
+    if not parts:
+        return ""
+    return "[" + " ".join(parts) + "] "
+
+
+def _sanitize_string(value: str) -> str:
+    lower_value = value.lower()
+    if any(token in lower_value for token in _SENSITIVE_SUBSTRINGS):
+        return "***REDACTED***"
+    return value
+
+
+def _sanitize_for_logging(data: Any) -> Any:
+    if data is None:
+        return None
+    if isinstance(data, Mapping):
+        redacted: MutableMapping[Any, Any] = {}
+        for key, value in data.items():
+            if isinstance(key, str) and any(token in key.lower() for token in _SENSITIVE_SUBSTRINGS):
+                redacted[key] = "***REDACTED***"
+            else:
+                redacted[key] = _sanitize_for_logging(value)
+        return redacted
+    if isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
+        return [_sanitize_for_logging(item) for item in data]
+    if isinstance(data, (bytes, bytearray)):
+        return "<binary>"
+    if isinstance(data, str):
+        return _sanitize_string(data)
+    return data
+
+
+def _format_for_logging(data: Any, *, max_length: int = 512) -> Any:
+    sanitized = _sanitize_for_logging(data)
+    if sanitized is None:
+        return None
+    if isinstance(sanitized, (dict, list)):
+        try:
+            serialized = json.dumps(sanitized, sort_keys=True)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            serialized = repr(sanitized)
+    else:
+        serialized = str(sanitized)
+    if len(serialized) > max_length:
+        return f"{serialized[:max_length]}...(truncated)"
+    return serialized
+
+
+def _log_request_response(
+    method: str,
+    url: str,
+    *,
+    request_func: Callable[[], requests.Response],
+    params: Optional[Mapping[str, Any]] = None,
+    context: Optional[Mapping[str, Any]] = None,
+    response_max_length: int = 512,
+):
+    context_str = _format_context(context)
+    logger.debug(
+        "Confluence API %sRequest %s %s params=%s",
+        context_str,
+        method.upper(),
+        url,
+        _format_for_logging(params),
+    )
+    try:
+        response = request_func()
+    except Exception:
+        logger.debug(
+            "Confluence API %sRequest %s %s failed before receiving a response",
+            context_str,
+            method.upper(),
+            url,
+        )
+        raise
+
+    logger.debug(
+        "Confluence API %sResponse %s %s status=%s body=%s",
+        context_str,
+        method.upper(),
+        url,
+        getattr(response, "status_code", "unknown"),
+        _format_for_logging(getattr(response, "text", ""), max_length=response_max_length),
+    )
+    return response
+
+
+def _parse_query_params(url: str) -> Mapping[str, Any]:
+    if not url:
+        return {}
+    parsed = urlparse(url)
+    return dict(parse_qsl(parsed.query, keep_blank_values=True))
 
 
 def _build_session() -> requests.Session:
@@ -95,13 +203,41 @@ def fetch_confluence_pages(sync: ConfluenceSync) -> Tuple[List[ConfluencePage], 
     params = query_params.copy()
 
     while True:
+        request_url = next_url or url
+        request_params = None if next_url else params
+        if request_params is None:
+            logged_params = _parse_query_params(request_url)
+        else:
+            logged_params = request_params
+        context = {
+            "sync_id": sync.pk,
+            "next_url": next_url,
+        }
+        if request_params:
+            context.update({
+                "start": request_params.get("start"),
+                "limit": request_params.get("limit"),
+            })
+        else:
+            next_query = _parse_query_params(request_url)
+            if next_query.get("start") is not None:
+                context["start"] = next_query.get("start")
+            if next_query.get("limit") is not None:
+                context["limit"] = next_query.get("limit")
+
         try:
-            response = _SESSION.get(
-                next_url or url,
-                auth=auth,
-                headers=headers,
-                timeout=_REQUEST_TIMEOUT,
-                params=None if next_url else params,
+            response = _log_request_response(
+                "GET",
+                request_url,
+                request_func=lambda: _SESSION.get(
+                    request_url,
+                    auth=auth,
+                    headers=headers,
+                    timeout=_REQUEST_TIMEOUT,
+                    params=request_params,
+                ),
+                params=logged_params,
+                context={k: v for k, v in context.items() if v is not None},
             )
             response.raise_for_status()
         except requests.RequestException:
