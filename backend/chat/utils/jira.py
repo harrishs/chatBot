@@ -110,6 +110,75 @@ def extract_project_key(board_url):
         logger.exception("Error extracting project key from Jira board URL")
     return ""  # fallback if parsing fails
 
+
+def extract_board_id(board_url: str) -> str:
+    try:
+        parts = board_url.split("/boards/")
+        if len(parts) > 1:
+            board_part = parts[1].split("/")[0]
+            board_id = board_part.split("?")[0]
+            return board_id
+    except Exception:
+        logger.exception("Error extracting board id from Jira board URL")
+    return ""
+
+
+def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str | None:
+    if not board_id:
+        return None
+
+    url = f"{base_url}/rest/agile/1.0/board/{board_id}/configuration"
+    try:
+        response = _SESSION.get(
+            url,
+            headers=headers,
+            auth=auth,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to fetch Jira board configuration")
+        return None
+
+    try:
+        payload = response.json() or {}
+    except ValueError:
+        logger.exception("Invalid JSON received from Jira board configuration")
+        return None
+
+    filter_config = payload.get("filter") or {}
+    filter_url = filter_config.get("self")
+    if not filter_url:
+        filter_id = filter_config.get("id")
+        if filter_id:
+            filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
+
+    if not filter_url:
+        return None
+
+    try:
+        filter_response = _SESSION.get(
+            filter_url,
+            headers=headers,
+            auth=auth,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        filter_response.raise_for_status()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to fetch Jira board filter details")
+        return None
+
+    try:
+        filter_payload = filter_response.json() or {}
+    except ValueError:
+        logger.exception("Invalid JSON received from Jira filter details")
+        return None
+
+    query = filter_payload.get("jql")
+    if query:
+        return query
+    return None
+
 def get_base_domain(board_url):
     parsed = urlparse(board_url)
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -172,6 +241,7 @@ def _delete_documents_for_source_ids(source: str, base_ids: Iterable[str]) -> in
 def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraComment]]], Set[str], Dict[str, Set[str]]]:
     api_key = decrypt_api_key(sync.credential._api_key)
     project_key = extract_project_key(sync.board_url)
+    board_id = extract_board_id(sync.board_url)
     base_url = get_base_domain(sync.board_url)
     email = sync.credential.email
 
@@ -181,13 +251,16 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         "Accept": "application/json"
     }
 
+    board_filter_jql = fetch_board_filter_jql(base_url, board_id, auth, headers)
+    jql_query = board_filter_jql or f"project={project_key}"
+
     issues: List[dict] = []
     max_results = 50
     next_page_token: str | None = None
 
     while True:
         body = {
-            "jql": f"project={project_key}",
+            "jql": jql_query,
             "maxResults": max_results,
         }
         if next_page_token:
