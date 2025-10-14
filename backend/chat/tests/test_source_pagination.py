@@ -1,10 +1,14 @@
 import os
 from unittest.mock import patch
 
+import requests
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
 os.environ.setdefault(
     "ENCRYPTION_KEY", "8wfsecdopt6Fz6ZRlo6RLWF2zOWITlzv9uVSXnscJFA="
 )
+os.environ.setdefault("OPENAI_API_KEY", "test")
+os.environ.setdefault("DJANGO_SECRET_KEY", "test-secret")
 
 import django  # noqa: E402
 
@@ -63,6 +67,7 @@ class SourcePaginationTests(TestCase):
             credential=self.credential,
         )
 
+        board_metadata_calls = []
         board_config_calls = []
         issue_pages = {
             None: {
@@ -181,9 +186,14 @@ class SourcePaginationTests(TestCase):
 
         def fake_get(url, *_, **kwargs):
             params = kwargs.get("params") or {}
+            if "/rest/agile/1.0/board/" in url and not url.endswith("/configuration"):
+                board_metadata_calls.append(url)
+                return DummyResponse({})
             if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
                 board_config_calls.append(url)
-                return DummyResponse({"filter": {}})
+                error = requests.HTTPError("401 Client Error: Unauthorized for url")
+                error.response = type("Resp", (), {"status_code": 401})()
+                raise error
             if "/comment" in url:
                 issue_key = url.split("/issue/")[1].split("/")[0]
                 start = params.get("startAt", 0)
@@ -205,6 +215,7 @@ class SourcePaginationTests(TestCase):
         ):
             processed = fetch_jira_issues(sync)
 
+        self.assertTrue(board_metadata_calls)
         self.assertTrue(board_config_calls)
         self.assertEqual(len(processed), 3)
         self.assertEqual(JiraIssue.objects.count(), 3)
@@ -266,14 +277,17 @@ class SourcePaginationTests(TestCase):
             }
         }
 
+        board_metadata_calls = []
         board_config_calls = []
         filter_detail_calls = []
 
         def fake_get(url, *_, **kwargs):
             params = kwargs.get("params") or {}
+            if "/rest/agile/1.0/board/" in url and not url.endswith("/configuration"):
+                board_metadata_calls.append(url)
+                return DummyResponse({"filterId": 12345})
             if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
-                board_config_calls.append(url)
-                return DummyResponse({"filter": {"self": filter_self_url, "id": 12345}})
+                raise AssertionError("Configuration endpoint should not be called when filterId is available")
             if url == filter_self_url:
                 filter_detail_calls.append(url)
                 return DummyResponse({"jql": board_filter_jql})
@@ -297,7 +311,105 @@ class SourcePaginationTests(TestCase):
         ):
             processed_bundle = fetch_jira_issues(sync)
 
-        self.assertTrue(board_config_calls)
+        self.assertTrue(board_metadata_calls)
+        self.assertTrue(filter_detail_calls)
+        issues, _, _ = processed_bundle
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(JiraIssue.objects.count(), 1)
+        self.assertEqual(
+            JiraComment.objects.filter(issue__issue_key="TEST-1").count(),
+            1,
+        )
+
+    def test_fetch_jira_issues_uses_board_filter_when_configuration_unauthorized(self):
+        sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/TEST/boards/1",
+            credential=self.credential,
+        )
+
+        board_filter_jql = 'project in ("ALPHA", "BETA") AND status != "Done"'
+        filter_self_url = "https://example.atlassian.net/rest/api/3/filter/12345"
+
+        issue_pages = {
+            None: {
+                "issues": [
+                    {
+                        "id": "1",
+                        "key": "TEST-1",
+                        "fields": {
+                            "summary": "Issue one",
+                            "description": "First issue",
+                            "status": {"name": "To Do"},
+                            "created": "2024-01-01T00:00:00.000+0000",
+                            "updated": "2024-01-02T00:00:00.000+0000",
+                        },
+                    }
+                ],
+                "isLast": True,
+                "maxResults": 50,
+                "total": 1,
+            }
+        }
+
+        comment_pages = {
+            "TEST-1": {
+                0: {
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "total": 1,
+                    "isLast": True,
+                    "comments": [
+                        {
+                            "id": "c1",
+                            "created": "2024-01-02T01:00:00.000+0000",
+                            "author": {"displayName": "Alice"},
+                            "body": {"type": "doc", "content": []},
+                        }
+                    ],
+                }
+            }
+        }
+
+        board_metadata_calls = []
+        board_config_calls = []
+        filter_detail_calls = []
+
+        def fake_get(url, *_, **kwargs):
+            params = kwargs.get("params") or {}
+            if "/rest/agile/1.0/board/" in url and not url.endswith("/configuration"):
+                board_metadata_calls.append(url)
+                return DummyResponse({"filterId": 12345})
+            if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
+                board_config_calls.append(url)
+                error = requests.HTTPError("401 Client Error: Unauthorized for url")
+                error.response = type("Resp", (), {"status_code": 401})()
+                raise error
+            if url == filter_self_url:
+                filter_detail_calls.append(url)
+                return DummyResponse({"jql": board_filter_jql})
+            if "/comment" in url:
+                issue_key = url.split("/issue/")[1].split("/")[0]
+                start = params.get("startAt", 0)
+                return DummyResponse(comment_pages[issue_key].get(start, {"comments": []}))
+            raise AssertionError(f"Unexpected URL {url}")
+
+        def fake_post(url, *_, **kwargs):
+            body = kwargs.get("json") or {}
+            if "/rest/api/3/search/jql" in url:
+                self.assertEqual(body.get("jql"), board_filter_jql)
+                token = body.get("nextPageToken")
+                self.assertIn(token, issue_pages)
+                return DummyResponse(issue_pages[token])
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch("chat.utils.jira._SESSION.get", side_effect=fake_get), patch(
+            "chat.utils.jira._SESSION.post", side_effect=fake_post
+        ):
+            processed_bundle = fetch_jira_issues(sync)
+
+        self.assertTrue(board_metadata_calls)
+        self.assertFalse(board_config_calls)
         self.assertTrue(filter_detail_calls)
         issues, _, _ = processed_bundle
         self.assertEqual(len(issues), 1)

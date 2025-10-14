@@ -127,31 +127,59 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
     if not board_id:
         return None
 
-    url = f"{base_url}/rest/agile/1.0/board/{board_id}/configuration"
+    filter_id: str | int | None = None
+
+    board_metadata_url = f"{base_url}/rest/agile/1.0/board/{board_id}"
     try:
         response = _SESSION.get(
-            url,
+            board_metadata_url,
             headers=headers,
             auth=auth,
             timeout=_REQUEST_TIMEOUT,
         )
         response.raise_for_status()
     except Exception:  # pragma: no cover - defensive logging
-        logger.exception("Failed to fetch Jira board configuration")
-        return None
+        logger.exception("Failed to fetch Jira board metadata")
+    else:
+        try:
+            payload = response.json() or {}
+        except ValueError:
+            logger.exception("Invalid JSON received from Jira board metadata")
+        else:
+            filter_id = payload.get("filterId")
+            if not filter_id:
+                filter_config = payload.get("filter") or {}
+                filter_id = filter_config.get("id")
 
-    try:
-        payload = response.json() or {}
-    except ValueError:
-        logger.exception("Invalid JSON received from Jira board configuration")
-        return None
+    filter_url: str | None = None
+    if filter_id:
+        filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
+    else:
+        config_url = f"{base_url}/rest/agile/1.0/board/{board_id}/configuration"
+        try:
+            response = _SESSION.get(
+                config_url,
+                headers=headers,
+                auth=auth,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to fetch Jira board configuration")
+            return None
 
-    filter_config = payload.get("filter") or {}
-    filter_url = filter_config.get("self")
-    if not filter_url:
-        filter_id = filter_config.get("id")
-        if filter_id:
-            filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
+        try:
+            payload = response.json() or {}
+        except ValueError:
+            logger.exception("Invalid JSON received from Jira board configuration")
+            return None
+
+        filter_config = payload.get("filter") or {}
+        filter_url = filter_config.get("self")
+        if not filter_url:
+            filter_id = filter_config.get("id")
+            if filter_id:
+                filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
 
     if not filter_url:
         return None
