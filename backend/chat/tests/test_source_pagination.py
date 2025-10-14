@@ -492,7 +492,9 @@ class SourcePaginationTests(TestCase):
                 self.assertIn("cql", params)
             return responses.pop(0)
 
-        with patch("chat.utils.confluence._SESSION.get", side_effect=fake_get):
+        with patch("chat.utils.confluence._SESSION.get", side_effect=fake_get), patch(
+            "chat.utils.confluence.logger.debug"
+        ) as mock_debug:
             pages, _ = fetch_confluence_pages(sync)
 
         self.assertEqual(len(pages), 3)
@@ -501,3 +503,20 @@ class SourcePaginationTests(TestCase):
             ConfluencePage.objects.order_by("title").values_list("title", flat=True)
         )
         self.assertEqual(titles, ["About", "Contact", "Welcome"])
+
+        request_logs = [
+            call for call in mock_debug.call_args_list if "Request" in call.args[0]
+        ]
+        self.assertEqual(len(request_logs), 3)
+        for call in request_logs:
+            context_str = call.args[1]
+            self.assertIn(f"sync_id={sync.pk}", context_str)
+
+        self.assertTrue(
+            any("start=1" in call.args[1] for call in request_logs),
+            "Expected pagination start token to be logged",
+        )
+        self.assertTrue(
+            any("next_url=" in call.args[1] for call in request_logs),
+            "Expected next URL to be included in logged context",
+        )
