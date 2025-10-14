@@ -469,6 +469,13 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         body = {
             "jql": jql_query,
             "maxResults": max_results,
+            "fields": [
+                "summary",
+                "description",
+                "status",
+                "created",
+                "updated",
+            ],
         }
         if next_page_token:
             body["nextPageToken"] = next_page_token

@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import patch
 
@@ -38,6 +39,7 @@ call_command("migrate", run_syncdb=True, verbosity=0)
 class DummyResponse:
     def __init__(self, payload):
         self._payload = payload
+        self.text = json.dumps(payload)
 
     def json(self):
         return self._payload
@@ -203,6 +205,10 @@ class SourcePaginationTests(TestCase):
         def fake_post(url, *_, **kwargs):
             body = kwargs.get("json") or {}
             if "/rest/api/3/search/jql" in url:
+                self.assertEqual(
+                    body.get("fields"),
+                    ["summary", "description", "status", "created", "updated"],
+                )
                 self.assertNotIn("startAt", body)
                 self.assertEqual(body.get("jql"), "project=TEST")
                 token = body.get("nextPageToken")
@@ -300,6 +306,10 @@ class SourcePaginationTests(TestCase):
         def fake_post(url, *_, **kwargs):
             body = kwargs.get("json") or {}
             if "/rest/api/3/search/jql" in url:
+                self.assertEqual(
+                    body.get("fields"),
+                    ["summary", "description", "status", "created", "updated"],
+                )
                 self.assertEqual(body.get("jql"), board_filter_jql)
                 token = body.get("nextPageToken")
                 self.assertIn(token, issue_pages)
@@ -397,6 +407,10 @@ class SourcePaginationTests(TestCase):
         def fake_post(url, *_, **kwargs):
             body = kwargs.get("json") or {}
             if "/rest/api/3/search/jql" in url:
+                self.assertEqual(
+                    body.get("fields"),
+                    ["summary", "description", "status", "created", "updated"],
+                )
                 self.assertEqual(body.get("jql"), board_filter_jql)
                 token = body.get("nextPageToken")
                 self.assertIn(token, issue_pages)
