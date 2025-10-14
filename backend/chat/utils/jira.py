@@ -123,13 +123,19 @@ def extract_board_id(board_url: str) -> str:
     return ""
 
 
-def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str | None:
+def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers, sync: JiraSync) -> str | None:
     if not board_id:
         return None
 
     filter_id: str | int | None = None
 
     board_metadata_url = f"{base_url}/rest/agile/1.0/board/{board_id}"
+    logger.debug(
+        "Sync %s: GET %s board_id=%s",
+        sync.pk,
+        board_metadata_url,
+        board_id,
+    )
     try:
         response = _SESSION.get(
             board_metadata_url,
@@ -141,6 +147,12 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
     except Exception:  # pragma: no cover - defensive logging
         logger.exception("Failed to fetch Jira board metadata")
     else:
+        logger.debug(
+            "Sync %s: Response %s status=%s",
+            sync.pk,
+            board_metadata_url,
+            response.status_code,
+        )
         try:
             payload = response.json() or {}
         except ValueError:
@@ -150,12 +162,23 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
             if not filter_id:
                 filter_config = payload.get("filter") or {}
                 filter_id = filter_config.get("id")
+            logger.debug(
+                "Sync %s: Board metadata filter_id=%s",
+                sync.pk,
+                filter_id,
+            )
 
     filter_url: str | None = None
     if filter_id:
         filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
     else:
         config_url = f"{base_url}/rest/agile/1.0/board/{board_id}/configuration"
+        logger.debug(
+            "Sync %s: GET %s board_id=%s",
+            sync.pk,
+            config_url,
+            board_id,
+        )
         try:
             response = _SESSION.get(
                 config_url,
@@ -168,6 +191,12 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
             logger.exception("Failed to fetch Jira board configuration")
             return None
 
+        logger.debug(
+            "Sync %s: Response %s status=%s",
+            sync.pk,
+            config_url,
+            response.status_code,
+        )
         try:
             payload = response.json() or {}
         except ValueError:
@@ -180,10 +209,22 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
             filter_id = filter_config.get("id")
             if filter_id:
                 filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
+        logger.debug(
+            "Sync %s: Board configuration filter_id=%s filter_url=%s",
+            sync.pk,
+            filter_id,
+            filter_url,
+        )
 
     if not filter_url:
         return None
 
+    logger.debug(
+        "Sync %s: GET %s filter_id=%s",
+        sync.pk,
+        filter_url,
+        filter_id,
+    )
     try:
         filter_response = _SESSION.get(
             filter_url,
@@ -196,6 +237,12 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
         logger.exception("Failed to fetch Jira board filter details")
         return None
 
+    logger.debug(
+        "Sync %s: Response %s status=%s",
+        sync.pk,
+        filter_url,
+        filter_response.status_code,
+    )
     try:
         filter_payload = filter_response.json() or {}
     except ValueError:
@@ -211,7 +258,7 @@ def get_base_domain(board_url):
     parsed = urlparse(board_url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
-def fetch_comments(base_url, issue_key, api_key, email):
+def fetch_comments(base_url, issue_key, api_key, email, sync: JiraSync):
     url = f"{base_url}/rest/api/3/issue/{issue_key}/comment"
     auth = requests.auth.HTTPBasicAuth(email, api_key)
     headers = {
@@ -224,6 +271,13 @@ def fetch_comments(base_url, issue_key, api_key, email):
 
     while True:
         params = {"startAt": start_at, "maxResults": max_results}
+        logger.debug(
+            "Sync %s Issue %s: GET %s params=%s",
+            sync.pk,
+            issue_key,
+            url,
+            params,
+        )
         response = _SESSION.get(
             url,
             headers=headers,
@@ -232,12 +286,33 @@ def fetch_comments(base_url, issue_key, api_key, email):
             params=params,
         )
         response.raise_for_status()
+        logger.debug(
+            "Sync %s Issue %s: Response %s status=%s",
+            sync.pk,
+            issue_key,
+            url,
+            response.status_code,
+        )
         payload = response.json()
 
         batch = payload.get("comments", []) or []
         if not batch:
+            logger.warning(
+                "Sync %s Issue %s: Empty Jira comments batch params=%s",
+                sync.pk,
+                issue_key,
+                params,
+            )
             break
 
+        logger.debug(
+            "Sync %s Issue %s: Received %s comments (startAt=%s maxResults=%s)",
+            sync.pk,
+            issue_key,
+            len(batch),
+            params["startAt"],
+            params["maxResults"],
+        )
         comments.extend(batch)
 
         if payload.get("isLast") is True:
@@ -279,8 +354,14 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         "Accept": "application/json"
     }
 
-    board_filter_jql = fetch_board_filter_jql(base_url, board_id, auth, headers)
+    board_filter_jql = fetch_board_filter_jql(base_url, board_id, auth, headers, sync)
     jql_query = board_filter_jql or f"project={project_key}"
+    logger.debug(
+        "Sync %s: Using JQL query '%s' (board_id=%s)",
+        sync.pk,
+        jql_query,
+        board_id,
+    )
 
     issues: List[dict] = []
     max_results = 50
@@ -293,6 +374,13 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         }
         if next_page_token:
             body["nextPageToken"] = next_page_token
+        logger.debug(
+            "Sync %s: POST %s body={maxResults=%s,nextPageToken=%s}",
+            sync.pk,
+            issue_url,
+            body["maxResults"],
+            body.get("nextPageToken"),
+        )
         response = _SESSION.post(
             issue_url,
             headers=headers,
@@ -301,6 +389,12 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
             json=body,
         )
         response.raise_for_status()
+        logger.debug(
+            "Sync %s: Response %s status=%s",
+            sync.pk,
+            issue_url,
+            response.status_code,
+        )
         payload = response.json() or {}
 
         data = payload.get("data")
@@ -308,8 +402,22 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
 
         batch = page.get("issues", []) or []
         if not batch:
+            logger.warning(
+                "Sync %s: Empty Jira issues batch jql='%s' maxResults=%s nextPageToken=%s",
+                sync.pk,
+                jql_query,
+                body["maxResults"],
+                body.get("nextPageToken"),
+            )
             break
 
+        logger.debug(
+            "Sync %s: Received %s issues (maxResults=%s nextPageToken=%s)",
+            sync.pk,
+            len(batch),
+            page.get("maxResults", body["maxResults"]),
+            payload.get("nextPageToken") or page.get("nextPageToken"),
+        )
         issues.extend(batch)
 
         if page.get("isLast") is True:
@@ -351,7 +459,7 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         )
 
         # Fetch and save comments
-        comments = fetch_comments(base_url, issue_key, api_key, email)
+        comments = fetch_comments(base_url, issue_key, api_key, email, sync)
         synced_comments: List[JiraComment] = []
         for comment in comments:
             plain_text = extract_plain_text_from_adf(comment.get("body"))
