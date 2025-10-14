@@ -40,6 +40,8 @@ def embed_text(text: str) -> list:
     client = get_openai_client()
 
     max_attempts = 6
+    base_backoff_seconds = 1
+    max_backoff_seconds = 10
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -50,13 +52,18 @@ def embed_text(text: str) -> list:
             return response.data[0].embedding
         except RateLimitError as exc:
             if attempt < max_attempts:
+                sleep_seconds = min(
+                    base_backoff_seconds * (2 ** (attempt - 1)),
+                    max_backoff_seconds,
+                )
                 logger.warning(
                     "OpenAI rate limit encountered while generating embeddings (attempt %d/%d). "
-                    "Retrying after 300 seconds.",
+                    "Retrying after %d seconds.",
                     attempt,
                     max_attempts,
+                    sleep_seconds,
                 )
-                time.sleep(300)
+                time.sleep(sleep_seconds)
                 continue
 
             final_message = getattr(exc, "message", str(exc))
