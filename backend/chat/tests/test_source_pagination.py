@@ -179,16 +179,22 @@ class SourcePaginationTests(TestCase):
 
         def fake_get(url, *_, **kwargs):
             params = kwargs.get("params") or {}
-            if "/rest/api/3/search" in url:
-                start = params.get("startAt", 0)
-                return DummyResponse(issue_pages.get(start, {"issues": []}))
             if "/comment" in url:
                 issue_key = url.split("/issue/")[1].split("/")[0]
                 start = params.get("startAt", 0)
                 return DummyResponse(comment_pages[issue_key].get(start, {"comments": []}))
             raise AssertionError(f"Unexpected URL {url}")
 
-        with patch("chat.utils.jira._SESSION.get", side_effect=fake_get):
+        def fake_post(url, *_, **kwargs):
+            body = kwargs.get("json") or {}
+            if "/rest/api/3/search/jql" in url:
+                start = body.get("startAt", 0)
+                return DummyResponse(issue_pages.get(start, {"issues": []}))
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch("chat.utils.jira._SESSION.get", side_effect=fake_get), patch(
+            "chat.utils.jira._SESSION.post", side_effect=fake_post
+        ):
             processed = fetch_jira_issues(sync)
 
         self.assertEqual(len(processed), 3)
