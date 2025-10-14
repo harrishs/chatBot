@@ -147,7 +147,34 @@ def fetch_board_filter_jql(base_url: str, board_id: str, auth, headers) -> str |
         return None
 
     filter_config = payload.get("filter") or {}
-    query = filter_config.get("query")
+    filter_url = filter_config.get("self")
+    if not filter_url:
+        filter_id = filter_config.get("id")
+        if filter_id:
+            filter_url = f"{base_url}/rest/api/3/filter/{filter_id}"
+
+    if not filter_url:
+        return None
+
+    try:
+        filter_response = _SESSION.get(
+            filter_url,
+            headers=headers,
+            auth=auth,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        filter_response.raise_for_status()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to fetch Jira board filter details")
+        return None
+
+    try:
+        filter_payload = filter_response.json() or {}
+    except ValueError:
+        logger.exception("Invalid JSON received from Jira filter details")
+        return None
+
+    query = filter_payload.get("jql")
     if query:
         return query
     return None

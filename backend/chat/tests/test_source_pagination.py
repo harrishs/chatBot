@@ -225,6 +225,7 @@ class SourcePaginationTests(TestCase):
         )
 
         board_filter_jql = 'project in ("ALPHA", "BETA") AND status != "Done"'
+        filter_self_url = "https://example.atlassian.net/rest/api/3/filter/12345"
         issue_pages = {
             None: {
                 "issues": [
@@ -266,12 +267,16 @@ class SourcePaginationTests(TestCase):
         }
 
         board_config_calls = []
+        filter_detail_calls = []
 
         def fake_get(url, *_, **kwargs):
             params = kwargs.get("params") or {}
             if "/rest/agile/1.0/board/" in url and url.endswith("/configuration"):
                 board_config_calls.append(url)
-                return DummyResponse({"filter": {"query": board_filter_jql}})
+                return DummyResponse({"filter": {"self": filter_self_url, "id": 12345}})
+            if url == filter_self_url:
+                filter_detail_calls.append(url)
+                return DummyResponse({"jql": board_filter_jql})
             if "/comment" in url:
                 issue_key = url.split("/issue/")[1].split("/")[0]
                 start = params.get("startAt", 0)
@@ -293,6 +298,7 @@ class SourcePaginationTests(TestCase):
             processed_bundle = fetch_jira_issues(sync)
 
         self.assertTrue(board_config_calls)
+        self.assertTrue(filter_detail_calls)
         issues, _, _ = processed_bundle
         self.assertEqual(len(issues), 1)
         self.assertEqual(JiraIssue.objects.count(), 1)
