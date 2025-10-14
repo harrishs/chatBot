@@ -182,15 +182,16 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
     }
 
     issues: List[dict] = []
-    start_at = 0
     max_results = 50
+    next_page_token: str | None = None
 
     while True:
         body = {
             "jql": f"project={project_key}",
-            "startAt": start_at,
             "maxResults": max_results,
         }
+        if next_page_token:
+            body["nextPageToken"] = next_page_token
         response = _SESSION.post(
             issue_url,
             headers=headers,
@@ -201,7 +202,8 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         response.raise_for_status()
         payload = response.json() or {}
 
-        page = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        data = payload.get("data")
+        page = data if isinstance(data, dict) else payload
 
         batch = page.get("issues", []) or []
         if not batch:
@@ -212,17 +214,17 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         if page.get("isLast") is True:
             break
 
-        batch_size = len(batch)
         total = page.get("total")
         max_results = page.get("maxResults", max_results) or max_results
-        start_value = page.get("startAt", start_at)
-        start_at = (start_value if isinstance(start_value, int) else start_at) + batch_size
+        next_token = payload.get("nextPageToken") or page.get("nextPageToken")
 
         if total is not None and len(issues) >= total:
             break
 
-        if batch_size < max_results:
+        if not next_token:
             break
+
+        next_page_token = next_token
 
     processed: List[Tuple[JiraIssue, List[JiraComment]]] = []
     remote_issue_keys: Set[str] = set()
