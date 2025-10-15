@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from typing import Dict, List
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
@@ -23,6 +24,81 @@ def _truncate_text(value: str, max_length: int) -> str:
     return truncated.rstrip(" \\n") + "…"
 
 
+_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "have",
+    "using",
+    "into",
+    "your",
+    "about",
+    "https",
+    "http",
+    "com",
+    "org",
+    "true",
+    "false",
+    "none",
+    "null",
+    "name",
+    "private",
+    "version",
+    "module",
+    "type",
+    "default",
+    "file",
+    "files",
+    "config",
+    "configuration",
+    "example",
+    "copy",
+    "backend",
+    "frontend",
+    "service",
+    "services",
+    "environment",
+    "variables",
+    "variable",
+    "docker",
+    "compose",
+    "prod",
+    "production",
+    "development",
+    "requirement",
+    "requirements",
+    "package",
+    "packages",
+    "json",
+    "txt",
+    "env",
+    "line",
+    "lines",
+    "data",
+    "value",
+    "values",
+}
+
+
+def _extract_keywords(content: str, limit: int = 12) -> List[str]:
+    tokens = re.findall(r"[A-Za-z0-9_+.\-]+", content.lower())
+    filtered = [
+        token
+        for token in tokens
+        if len(token) > 2 and token not in _STOPWORDS and any(char.isalpha() for char in token)
+    ]
+
+    if not filtered:
+        return []
+
+    counts = Counter(filtered)
+    return [word for word, _ in counts.most_common(limit)]
+
+
 def _metadata_from_document(document: Dict) -> Dict:
     """Convert a search document into safe metadata for prompts and responses."""
 
@@ -30,8 +106,8 @@ def _metadata_from_document(document: Dict) -> Dict:
     lines = [line.strip() for line in content.splitlines() if line.strip()]
 
     title = lines[0][:120] if lines else ""
-    summary_source = " ".join(lines[:3]) if lines else ""
-    summary = _truncate_text(summary_source, 280)
+    summary_source = " ".join(lines[:8]) if lines else ""
+    summary = _truncate_text(summary_source, 320)
 
     metadata = {
         key: document.get(key)
@@ -49,6 +125,10 @@ def _metadata_from_document(document: Dict) -> Dict:
         metadata["title"] = title
     if summary:
         metadata["summary"] = summary
+
+    keywords = _extract_keywords(content)
+    if keywords:
+        metadata["keywords"] = ", ".join(keywords)
 
     return metadata
 
@@ -75,6 +155,10 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
     similarity = metadata.get("similarity")
     if isinstance(similarity, float):
         sections.append(f"Similarity: {similarity:.3f}")
+
+    keywords = metadata.get("keywords")
+    if keywords:
+        sections.append(f"Keywords: {keywords}")
 
     return "\n".join(sections)
 
