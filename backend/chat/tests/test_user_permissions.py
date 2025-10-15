@@ -95,3 +95,58 @@ class UserViewSetPermissionTests(TestCase):
         delete_response = self.client.delete(reverse("user-detail", args=[managed_user_id]))
         self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(User.objects.filter(id=managed_user_id).exists())
+
+
+class CompanyViewSetPermissionTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company_one = Company.objects.create(name="Company One")
+        self.company_two = Company.objects.create(name="Company Two")
+
+        self.staff_user = User.objects.create_user(
+            username="company-staff",
+            email="staff@example.com",
+            password="password123",
+        )
+        self.staff_user.company = self.company_one
+        self.staff_user.is_staff = True
+        self.staff_user.save()
+
+        self.superuser = User.objects.create_superuser(
+            username="super-admin",
+            email="super@example.com",
+            password="password123",
+        )
+
+    def test_staff_user_only_lists_their_company(self):
+        self.client.force_authenticate(self.staff_user)
+
+        response = self.client.get(reverse("company-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["id"], self.company_one.id)
+
+    def test_staff_user_cannot_retrieve_other_company(self):
+        self.client.force_authenticate(self.staff_user)
+
+        response = self.client.get(reverse("company-detail", args=[self.company_two.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_superuser_lists_all_companies(self):
+        self.client.force_authenticate(self.superuser)
+
+        response = self.client.get(reverse("company-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {company["id"] for company in response.data}
+        self.assertSetEqual(returned_ids, {self.company_one.id, self.company_two.id})
+
+    def test_superuser_can_retrieve_any_company(self):
+        self.client.force_authenticate(self.superuser)
+
+        response = self.client.get(reverse("company-detail", args=[self.company_two.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.company_two.id)
