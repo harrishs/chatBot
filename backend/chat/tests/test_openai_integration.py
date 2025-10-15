@@ -55,24 +55,52 @@ class GenerateAnswerTests(SimpleTestCase):
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_success(self):
         mock_client = Mock()
-        mock_choice = SimpleNamespace(message=SimpleNamespace(content="final answer"))
+        mock_choice = SimpleNamespace(
+            message=SimpleNamespace(content="final answer referencing [jira:PROJ-1]")
+        )
         mock_response = SimpleNamespace(choices=[mock_choice])
         mock_client.chat.completions.create.return_value = mock_response
 
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-1",
+                "source_display": "PROJ-1",
+                "source_url": "https://example.atlassian.net/browse/PROJ-1",
+                "content": "Issue title\nA concise update about the fix.",
+                "similarity": 0.91,
+            }
+        ]
+
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
-            "chat.utils.rag.search_documents", return_value=[{"source": "jira", "source_id": "1", "content": "data"}]
+            "chat.utils.rag.search_documents", return_value=documents
         ) as mock_search_documents:
             result = rag.generate_answer(company_id=1, chatbot_id=2, query="question")
 
         self.assertEqual(
             result,
             {
-                "answer": "final answer",
-                "sources": [{"source": "jira", "source_id": "1", "content": "data"}],
+                "answer": "final answer referencing [jira:PROJ-1]",
+                "sources": [
+                    {
+                        "source": "jira",
+                        "source_id": "PROJ-1",
+                        "source_display": "PROJ-1",
+                        "source_url": "https://example.atlassian.net/browse/PROJ-1",
+                        "similarity": 0.91,
+                        "title": "Issue title",
+                        "summary": "Issue title A concise update about the fix.",
+                    }
+                ],
             },
         )
         mock_client.chat.completions.create.assert_called_once()
         mock_search_documents.assert_called_once_with(1, 2, "question", 5)
+
+        messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        user_content = next(item["content"] for item in messages if item["role"] == "user")
+        self.assertNotIn("Issue title\nA concise update about the fix.", user_content)
+        self.assertIn("Summary: Issue title A concise update about the fix.", user_content)
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_rate_limit_error(self):
@@ -88,6 +116,49 @@ class GenerateAnswerTests(SimpleTestCase):
         ):
             with self.assertRaises(RuntimeError):
                 rag.generate_answer(company_id=1, chatbot_id=2, query="question")
+
+    @override_settings(OPENAI_API_KEY="test-key")
+    def test_generate_answer_sanitizes_code_and_ensures_citations(self):
+        mock_client = Mock()
+        mock_choice = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Here is what you asked:\n```python\nprint('secret')\n```"
+            )
+        )
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        mock_client.chat.completions.create.return_value = mock_response
+
+        documents = [
+            {
+                "source": "github",
+                "source_id": "app/main.py",
+                "source_display": "app/main.py",
+                "content": "main.py\nImplements the entry point.",
+                "similarity": 0.77,
+            }
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ):
+            result = rag.generate_answer(company_id=1, chatbot_id=2, query="Show me the code")
+
+        self.assertNotIn("```", result["answer"])
+        self.assertIn("Sources: [github:app/main.py]", result["answer"])
+        self.assertIn("[omitted code block]", result["answer"])
+        self.assertEqual(
+            result["sources"],
+            [
+                {
+                    "source": "github",
+                    "source_id": "app/main.py",
+                    "source_display": "app/main.py",
+                    "similarity": 0.77,
+                    "title": "main.py",
+                    "summary": "main.py Implements the entry point.",
+                }
+            ],
+        )
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_network_error(self):
