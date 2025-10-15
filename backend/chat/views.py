@@ -77,6 +77,19 @@ class IsAdminOrReadOnly(permissions.BasePermission):
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
             return request.user and request.user.is_authenticated
+
+        if getattr(view, "basename", None) == "user":
+            return bool(request.user and request.user.is_authenticated)
+
+        return bool(request.user and request.user.is_staff)
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return request.user and request.user.is_authenticated
+
+        if isinstance(obj, User) and request.user == obj:
+            return True
+
         return bool(request.user and request.user.is_staff)
 
 
