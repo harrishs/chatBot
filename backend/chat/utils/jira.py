@@ -475,6 +475,10 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
                 "status",
                 "created",
                 "updated",
+                "resolution",
+                "resolutiondate",
+                "statuscategorychangedate",
+                "assignee",
             ],
         }
         if next_page_token:
@@ -572,6 +576,26 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         description = fields.get("description", "") or ""
         status_info = fields.get("status") or {}
         status_name = status_info.get("name", "") if isinstance(status_info, Mapping) else ""
+        status_category_info = status_info.get("statusCategory") if isinstance(status_info, Mapping) else None
+        status_category = (
+            status_category_info.get("name")
+            if isinstance(status_category_info, Mapping)
+            else ""
+        )
+        status_category_changed_at = fields.get("statuscategorychangedate") or None
+        assignee_info = fields.get("assignee") or {}
+        assignee_name = (
+            assignee_info.get("displayName")
+            if isinstance(assignee_info, Mapping)
+            else ""
+        )
+        resolution_info = fields.get("resolution") or {}
+        resolution_name = (
+            resolution_info.get("name")
+            if isinstance(resolution_info, Mapping)
+            else ""
+        )
+        resolution_date = fields.get("resolutiondate") or None
         created_at = fields.get("created")
         updated_at = fields.get("updated")
 
@@ -591,6 +615,11 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
                 "summary": summary,
                 "description": description,
                 "status": status_name,
+                "status_category": status_category or None,
+                "status_category_changed_at": status_category_changed_at,
+                "assignee": assignee_name or None,
+                "resolution": resolution_name or None,
+                "resolution_date": resolution_date,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
@@ -652,7 +681,61 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
     Ingest a Jira issue and its comments as documents.
     """
     issue_id = issue.issue_key
-    content = f"Issue: {issue.summary}\n\nDescription: {issue.description}"
+
+    def _format_datetime(value: Any) -> Optional[str]:
+        if not value:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            return value.isoformat()
+        except AttributeError:  # pragma: no cover - defensive fallback
+            return str(value)
+
+    summary = (issue.summary or "").strip() or issue.issue_key
+    description_raw = issue.description or ""
+    description = description_raw.strip() or "No description provided."
+
+    metadata_lines: List[str] = [f"Key: {issue.issue_key}"]
+
+    if issue.status:
+        metadata_lines.append(f"Status: {issue.status}")
+
+    if issue.status_category:
+        metadata_lines.append(f"Status category: {issue.status_category}")
+
+    status_category_changed = _format_datetime(issue.status_category_changed_at)
+    if status_category_changed:
+        metadata_lines.append(f"Status category changed at: {status_category_changed}")
+
+    if issue.assignee:
+        metadata_lines.append(f"Assignee: {issue.assignee}")
+
+    if issue.resolution:
+        metadata_lines.append(f"Resolution: {issue.resolution}")
+
+    resolved_at = _format_datetime(issue.resolution_date)
+    if resolved_at:
+        metadata_lines.append(f"Resolved at: {resolved_at}")
+        metadata_lines.append("Completion summary: Issue completed and resolved.")
+    elif issue.status_category and issue.status_category.lower() == "done":
+        metadata_lines.append("Completion summary: Issue completed.")
+
+    created_at = _format_datetime(issue.created_at)
+    if created_at:
+        metadata_lines.append(f"Created: {created_at}")
+
+    updated_at = _format_datetime(issue.updated_at)
+    if updated_at:
+        metadata_lines.append(f"Updated: {updated_at}")
+
+    metadata_section = "\n".join(metadata_lines)
+
+    content = (
+        f"Issue: {summary}\n\n"
+        f"Issue details:\n{metadata_section}\n\n"
+        f"Description:\n{description}"
+    )
     documents = []
     issue_documents = save_document(
         company=company,

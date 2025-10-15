@@ -81,3 +81,21 @@ docker compose -f docker-compose.prod.yml up -d backend worker
 
 The worker polls the shared database for new sync jobs. Restart the worker after
 deploying new code so the latest task definitions are loaded.
+
+### Jira completion metadata backfill
+
+Jira issue documents now include additional completion metadata (resolution,
+resolution timestamps, assignee, and status category changes). Apply the
+database migrations and then trigger a fresh Jira sync so existing bots
+re-ingest issues with the richer content.
+
+1. Deploy the code and run `python manage.py migrate`.
+2. Queue a manual Jira sync for each integration (for example, via the
+   `POST /api/chatBots/<bot_id>/jiraSyncs/<sync_id>/sync_now/` endpoint or the
+   Django admin).
+3. Allow the background worker (`python manage.py process_sync_jobs --once` in
+   development) to process the queued jobs so documents are regenerated with the
+   new metadata.
+
+No additional cleanup is required; rerunning the sync updates both the stored
+issues and their embeddings.

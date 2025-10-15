@@ -1,4 +1,5 @@
 import os
+from typing import List
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -132,6 +133,24 @@ class JiraIngestionSourceTests(TestCase):
 
     @patch("chat.utils.embeddings.embed_text", return_value=[0.1] * 1536)
     def test_ingest_jira_issue_uses_canonical_sources(self, mock_embed_text):
+        resolved_at = timezone.now().replace(microsecond=0)
+        self.issue.status = "Done"
+        self.issue.status_category = "Done"
+        self.issue.status_category_changed_at = resolved_at
+        self.issue.assignee = "Casey Completed"
+        self.issue.resolution = "Fixed"
+        self.issue.resolution_date = resolved_at
+        self.issue.save(
+            update_fields=[
+                "status",
+                "status_category",
+                "status_category_changed_at",
+                "assignee",
+                "resolution",
+                "resolution_date",
+            ]
+        )
+
         ingest_jira_issue(
             company=self.company,
             chatbot=self.chatbot,
@@ -151,6 +170,22 @@ class JiraIngestionSourceTests(TestCase):
                 ("jira_comment", expected_comment_id),
             },
         )
+
+        issue_document = documents.get(source="jira_issue", source_id=self.issue.issue_key)
+        self.assertIn("Issue details:", issue_document.content)
+        self.assertIn("Status: Done", issue_document.content)
+        self.assertIn("Status category: Done", issue_document.content)
+        self.assertIn("Assignee: Casey Completed", issue_document.content)
+        self.assertIn("Resolution: Fixed", issue_document.content)
+        self.assertIn("Resolved at:", issue_document.content)
+        self.assertIn(resolved_at.isoformat(), issue_document.content)
+        self.assertIn("Completion summary: Issue completed and resolved.", issue_document.content)
+        self.assertIn("Description:\nIssue description", issue_document.content)
+
+        issue_embedding_payload = mock_embed_text.call_args_list[0].args[0]
+        self.assertIn("Status: Done", issue_embedding_payload)
+        self.assertIn("Resolution: Fixed", issue_embedding_payload)
+        self.assertIn("Completion summary: Issue completed and resolved.", issue_embedding_payload)
 
         self.assertEqual(mock_embed_text.call_count, 2)
 
@@ -201,6 +236,60 @@ class JiraIngestionSourceTests(TestCase):
         )
 
         self.assertEqual(jira_issue_documents.count(), 2)
+
+
+    @patch("chat.utils.embeddings.embed_text")
+    def test_completion_metadata_surfaces_completed_issues(self, mock_embed_text):
+        def fake_embed(text: str) -> List[float]:
+            vector = [0.0] * 1536
+            lowered = text.lower()
+            if "completed" in lowered or "resolved" in lowered or "status: done" in lowered:
+                vector[0] = 1.0
+            else:
+                vector[1] = 1.0
+            return vector
+
+        mock_embed_text.side_effect = fake_embed
+
+        resolved_at = timezone.now().replace(microsecond=0)
+        self.issue.status = "Done"
+        self.issue.status_category = "Done"
+        self.issue.status_category_changed_at = resolved_at
+        self.issue.assignee = "Casey Completed"
+        self.issue.resolution = "Fixed"
+        self.issue.resolution_date = resolved_at
+        self.issue.save(
+            update_fields=[
+                "status",
+                "status_category",
+                "status_category_changed_at",
+                "assignee",
+                "resolution",
+                "resolution_date",
+            ]
+        )
+
+        ingest_jira_issue(
+            company=self.company,
+            chatbot=self.chatbot,
+            issue=self.issue,
+            comments=[self.comment],
+        )
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="What was the last completed issue?",
+            top_k=5,
+        )
+
+        self.assertGreaterEqual(len(results), 1)
+        top_result = results[0]
+        self.assertEqual(top_result["source"], "jira_issue")
+        self.assertIn("Status: Done", top_result["content"])
+        self.assertIn("Completion summary: Issue completed and resolved.", top_result["content"])
+        self.assertIn(resolved_at.isoformat(), top_result["content"])
+        self.assertTrue(mock_embed_text.called)
 
 
 class ChatbotAccessAPITests(APITestCase):

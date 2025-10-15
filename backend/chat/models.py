@@ -209,6 +209,11 @@ class JiraIssue(models.Model):
     summary = models.TextField()
     description = models.TextField(null=True, blank=True)
     status = models.CharField(max_length=100)
+    status_category = models.CharField(max_length=100, null=True, blank=True)
+    status_category_changed_at = models.DateTimeField(null=True, blank=True)
+    assignee = models.CharField(max_length=255, null=True, blank=True)
+    resolution = models.CharField(max_length=255, null=True, blank=True)
+    resolution_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField()
 
