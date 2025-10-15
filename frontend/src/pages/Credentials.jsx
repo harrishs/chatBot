@@ -104,17 +104,18 @@ function Credentials() {
 						required
 					/>
 				</div>
-				<div>
-					<label>API Key:</label>
-					<br />
-					<input
-						type="text"
-						value={apiKey}
-						onChange={(e) => setApiKey(e.target.value)}
-						required
-						placeholder={editId ? "Enter New/ Existing Key" : ""}
-					/>
-				</div>
+                                <div>
+                                        <label>API Key:</label>
+                                        <br />
+                                        <input
+                                                type="password"
+                                                autoComplete="off"
+                                                value={apiKey}
+                                                onChange={(e) => setApiKey(e.target.value)}
+                                                required
+                                                placeholder={editId ? "Enter New/ Existing Key" : ""}
+                                        />
+                                </div>
 				<button type="submit">{editId ? "Update" : "Save"} Credential</button>
 				{editId && (
 					<button
