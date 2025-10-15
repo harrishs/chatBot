@@ -804,15 +804,15 @@ class CompanyPermissionsTests(APITestCase):
         self.company_one.refresh_from_db()
         self.assertEqual(self.company_one.name, "Company One")
 
-    def test_admin_can_update_any_company(self):
+    def test_admin_cannot_update_other_company(self):
         self.client.force_authenticate(user=self.admin_user)
 
         url = reverse("company-detail", args=[self.company_two.id])
         response = self.client.patch(url, {"name": "Updated"}, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.company_two.refresh_from_db()
-        self.assertEqual(self.company_two.name, "Updated")
+        self.assertEqual(self.company_two.name, "Company Two")
 
 
 class UserPasswordUpdateTests(APITestCase):

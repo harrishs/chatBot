@@ -174,7 +174,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Company.objects.none()
 
-        if user.is_staff or user.is_superuser:
+        if user.is_superuser:
             return Company.objects.all()
 
         if user.company_id:
