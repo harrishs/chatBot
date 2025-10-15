@@ -79,6 +79,9 @@ class IsAdminOrReadOnly(permissions.BasePermission):
             return request.user and request.user.is_authenticated
 
         if getattr(view, "basename", None) == "user":
+            if request.method == "POST" or getattr(view, "action", None) == "create":
+                return bool(request.user and request.user.is_staff)
+
             return bool(request.user and request.user.is_authenticated)
 
         return bool(request.user and request.user.is_staff)
