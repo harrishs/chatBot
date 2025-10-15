@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../api/axios";
 import { handleGitSubmit } from "./gitSubmitHelper";
+import { handleJiraSubmit, handleConfluenceSubmit } from "./syncSubmitHelpers";
 
 function ChatBotSyncs() {
 	const { chatBotId } = useParams();
@@ -286,31 +287,42 @@ function ChatBotSyncs() {
                 [chatBotId, pollStatus, updateSync],
         );
 
-	const submitJira = async (e) => {
-		e.preventDefault();
-		try {
-			await api.post(`/chatBots/${chatBotId}/jiraSyncs/`, newJira);
-			setNewJira({ board_url: "", credential_id: "", sync_interval: "manual" });
-			loadData();
-		} catch (err) {
-			console.error("Error submitting Jira sync", err);
-		}
-	};
+        const submitJira = async (e) => {
+                await handleJiraSubmit({
+                        event: e,
+                        newJira,
+                        chatBotId,
+                        apiClient: api,
+                        alertFn: window.alert,
+                        resetForm: () =>
+                                setNewJira({
+                                        board_url: "",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (err) => console.error("Error submitting Jira sync", err),
+                });
+        };
 
-	const submitConfluence = async (e) => {
-		e.preventDefault();
-		try {
-			await api.post(`/chatBots/${chatBotId}/confluenceSyncs/`, newConfluence);
-			setNewConfluence({
-				space_url: "",
-				credential_id: "",
-				sync_interval: "manual",
-			});
-			loadData();
-		} catch (err) {
-			console.error("Error submitting Confluence sync", err);
-		}
-	};
+        const submitConfluence = async (e) => {
+                await handleConfluenceSubmit({
+                        event: e,
+                        newConfluence,
+                        chatBotId,
+                        apiClient: api,
+                        alertFn: window.alert,
+                        resetForm: () =>
+                                setNewConfluence({
+                                        space_url: "",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (err) =>
+                                console.error("Error submitting Confluence sync", err),
+                });
+        };
 
         const submitGit = async (e) => {
                 await handleGitSubmit({
