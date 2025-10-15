@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../api/axios";
+import { handleGitSubmit } from "./gitSubmitHelper";
 
 function ChatBotSyncs() {
 	const { chatBotId } = useParams();
@@ -311,20 +312,24 @@ function ChatBotSyncs() {
 		}
 	};
 
-	const submitGit = async (e) => {
-		e.preventDefault();
-		await api.post(`/chatBots/${chatBotId}/gitRepoSyncs/`, {
-			...newGit,
-			credential_id: parseInt(newGit.credential_id, 10),
-		});
-		setNewGit({
-			repo_full_name: "",
-			branch: "main",
-			credential_id: "",
-			sync_interval: "manual",
-		});
-		loadData();
-	};
+        const submitGit = async (e) => {
+                await handleGitSubmit({
+                        event: e,
+                        newGit,
+                        chatBotId,
+                        apiClient: api,
+                        alertFn: window.alert,
+                        resetForm: () =>
+                                setNewGit({
+                                        repo_full_name: "",
+                                        branch: "main",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (error) => console.error("Error submitting Git sync", error),
+                });
+        };
 
 	const deleteJira = async (id) => {
 		await api.delete(`/chatBots/${chatBotId}/jiraSyncs/${id}/`);
