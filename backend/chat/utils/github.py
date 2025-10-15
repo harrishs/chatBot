@@ -97,13 +97,21 @@ def _build_github_document_source_id(sync: GitRepoSync, repo_file: GitRepoFile) 
     return f"https://github.com/{sync.repo_full_name}/blob/{branch}/{path}"
 
 
-def _delete_documents_for_source_ids(base_ids: Iterable[str]) -> int:
+def _delete_documents_for_source_ids(sync: GitRepoSync, base_ids: Iterable[str]) -> int:
     deleted = 0
     for base_id in base_ids:
         if base_id is None:
             continue
         conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
-        deleted += Document.objects.filter(source="github").filter(conditions).delete()[0]
+        deleted += (
+            Document.objects.filter(
+                source="github",
+                company=sync.chatBot.company,
+                chatbot=sync.chatBot,
+            )
+            .filter(conditions)
+            .delete()[0]
+        )
     return deleted
 
 
@@ -188,7 +196,7 @@ def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None =
             legacy_ids.append(legacy_id)
 
         if legacy_ids:
-            _delete_documents_for_source_ids(legacy_ids)
+            _delete_documents_for_source_ids(sync, legacy_ids)
 
         docs = save_document(
             company=sync.chatBot.company,
@@ -222,7 +230,7 @@ def cleanup_removed_github_files(sync: GitRepoSync, remote_paths: Set[str]) -> i
         if legacy_id != stable_id:
             document_ids.append(legacy_id)
 
-    _delete_documents_for_source_ids(document_ids)
+    _delete_documents_for_source_ids(sync, document_ids)
     GitRepoFile.objects.filter(pk__in=file_ids).delete()
 
     return len(files_to_delete)

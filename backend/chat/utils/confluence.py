@@ -169,13 +169,21 @@ def _build_confluence_document_source_id(page: ConfluencePage) -> Optional[str]:
     return page.url or page.remote_id
 
 
-def _delete_documents_for_source_ids(base_ids: Iterable[str]) -> int:
+def _delete_documents_for_source_ids(sync: ConfluenceSync, base_ids: Iterable[str]) -> int:
     deleted = 0
     for base_id in base_ids:
         if base_id is None:
             continue
         conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
-        deleted += Document.objects.filter(source="confluence").filter(conditions).delete()[0]
+        deleted += (
+            Document.objects.filter(
+                source="confluence",
+                company=sync.chatBot.company,
+                chatbot=sync.chatBot,
+            )
+            .filter(conditions)
+            .delete()[0]
+        )
     return deleted
 
 
@@ -344,7 +352,7 @@ def ingest_confluence_pages(sync: ConfluenceSync, pages: Iterable[ConfluencePage
             legacy_ids.append(str(page.pk))
 
         if legacy_ids:
-            _delete_documents_for_source_ids(legacy_ids)
+            _delete_documents_for_source_ids(sync, legacy_ids)
 
         docs = save_document(
             company=sync.chatBot.company,
@@ -388,7 +396,7 @@ def cleanup_removed_confluence_pages(
             if pk_id != stable_id:
                 source_ids_to_delete.append(pk_id)
 
-    _delete_documents_for_source_ids(source_ids_to_delete)
+    _delete_documents_for_source_ids(sync, source_ids_to_delete)
     ConfluencePage.objects.filter(pk__in=[page.pk for page in pages_to_delete]).delete()
 
     return len(pages_to_delete)
