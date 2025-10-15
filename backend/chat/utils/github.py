@@ -87,11 +87,31 @@ def _get_last_commit_date(full_name: str, path: str, token: str) -> datetime:
     # fallback to now
     return datetime.now(timezone.utc)
 
-def _delete_documents_for_source_ids(base_ids: Iterable[int]) -> int:
+def _build_github_document_source_id(sync: GitRepoSync, repo_file: GitRepoFile) -> str:
+    """Return a stable, human-friendly identifier for a GitHub file."""
+    if repo_file.url:
+        return repo_file.url
+
+    branch = quote(sync.branch)
+    path = repo_file.path.lstrip("/")
+    return f"https://github.com/{sync.repo_full_name}/blob/{branch}/{path}"
+
+
+def _delete_documents_for_source_ids(sync: GitRepoSync, base_ids: Iterable[str]) -> int:
     deleted = 0
     for base_id in base_ids:
+        if base_id is None:
+            continue
         conditions = Q(source_id=str(base_id)) | Q(source_id__startswith=f"{base_id}_part_")
-        deleted += Document.objects.filter(source="github").filter(conditions).delete()[0]
+        deleted += (
+            Document.objects.filter(
+                source="github",
+                company=sync.chatBot.company,
+                chatbot=sync.chatBot,
+            )
+            .filter(conditions)
+            .delete()[0]
+        )
     return deleted
 
 
@@ -168,11 +188,21 @@ def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None =
     files_to_ingest = list(files) if files is not None else list(GitRepoFile.objects.filter(sync=sync))
     count = 0
     for f in files_to_ingest:
+        stable_source_id = _build_github_document_source_id(sync, f)
+
+        legacy_ids: List[str] = []
+        legacy_id = str(f.pk)
+        if legacy_id != stable_source_id:
+            legacy_ids.append(legacy_id)
+
+        if legacy_ids:
+            _delete_documents_for_source_ids(sync, legacy_ids)
+
         docs = save_document(
             company=sync.chatBot.company,
             chatbot=sync.chatBot,
             source="github",
-            source_id=f.id,
+            source_id=stable_source_id,
             content=f.content
         )
         count += len(docs)
@@ -190,7 +220,17 @@ def cleanup_removed_github_files(sync: GitRepoSync, remote_paths: Set[str]) -> i
         return 0
 
     file_ids = [file.pk for file in files_to_delete]
-    _delete_documents_for_source_ids(file_ids)
+
+    document_ids: List[str] = []
+    for file in files_to_delete:
+        stable_id = _build_github_document_source_id(sync, file)
+        if stable_id:
+            document_ids.append(stable_id)
+        legacy_id = str(file.pk)
+        if legacy_id != stable_id:
+            document_ids.append(legacy_id)
+
+    _delete_documents_for_source_ids(sync, document_ids)
     GitRepoFile.objects.filter(pk__in=file_ids).delete()
 
     return len(files_to_delete)

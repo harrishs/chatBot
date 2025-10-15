@@ -304,7 +304,7 @@ class Document(models.Model):
     company = models.ForeignKey("chat.Company", on_delete=models.CASCADE)
     chatbot = models.ForeignKey("chat.ChatBotInstance", on_delete=models.CASCADE)
     source = models.CharField(max_length=50, choices=SOURCE_CHOICES)
-    source_id = models.CharField(max_length=200)
+    source_id = models.CharField(max_length=500)
     content = models.TextField()
     embedding = VectorField(dimensions=1536)
     created_at = models.DateTimeField(auto_now_add=True)

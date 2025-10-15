@@ -129,6 +129,7 @@ class JiraIngestionSourceTests(TestCase):
             author="Commenter",
             content="A helpful comment",
             created_at=timezone.now(),
+            remote_id="c-1",
         )
 
     @patch("chat.utils.embeddings.embed_text", return_value=[0.1] * 1536)
@@ -162,7 +163,7 @@ class JiraIngestionSourceTests(TestCase):
 
         self.assertEqual(documents.count(), 2)
         sources = {(doc.source, doc.source_id) for doc in documents}
-        expected_comment_id = f"{self.issue.issue_key}_comment_{self.comment.id}"
+        expected_comment_id = f"{self.issue.issue_key}#comment#{self.comment.remote_id}"
         self.assertSetEqual(
             sources,
             {

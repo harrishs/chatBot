@@ -64,7 +64,7 @@ class SyncIngestionTests(APITestCase):
                 company=sync_obj.chatBot.company,
                 chatbot=sync_obj.chatBot,
                 source="jira_comment",
-                source_id="TEST-1-comment",
+                source_id="TEST-1#comment#c-1",
                 content="A helpful comment",
                 embedding=comment_embedding,
             )
@@ -214,7 +214,7 @@ class SyncIngestionTests(APITestCase):
                 company=sync_obj.chatBot.company,
                 chatbot=sync_obj.chatBot,
                 source="confluence",
-                source_id="CONF-1",
+                source_id="https://example.atlassian.net/wiki/spaces/CONF/pages/1",
                 content="Welcome to the space",
                 embedding=embedding,
             )
@@ -311,7 +311,7 @@ class SyncIngestionTests(APITestCase):
                 company=sync_obj.chatBot.company,
                 chatbot=sync_obj.chatBot,
                 source="github",
-                source_id="README.md",
+                source_id="https://github.com/octocat/hello-world/blob/main/README.md",
                 content="Hello world",
                 embedding=embedding,
             )
@@ -460,7 +460,7 @@ class SyncIngestionTests(APITestCase):
             company=self.company,
             chatbot=self.chatbot,
             source="jira_comment",
-            source_id=f"{issue.issue_key}_comment_{comment.pk}",
+            source_id=f"{issue.issue_key}#comment#{comment.remote_id}",
             content="Hello",
             embedding=[0.0] * 1536,
         )
@@ -492,7 +492,7 @@ class SyncIngestionTests(APITestCase):
             company=self.company,
             chatbot=self.chatbot,
             source="confluence",
-            source_id=page.pk,
+            source_id=page.url,
             content="Body",
             embedding=[0.0] * 1536,
         )
@@ -533,7 +533,7 @@ class SyncIngestionTests(APITestCase):
             company=self.company,
             chatbot=self.chatbot,
             source="github",
-            source_id=str(repo_file.pk),
+            source_id=repo_file.url,
             content="Hello",
             embedding=[0.0] * 1536,
         )

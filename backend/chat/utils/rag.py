@@ -17,7 +17,10 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
     docs = search_documents(company_id, chatbot_id, query, top_k)
 
     # 2. Build context string
-    context_text = "\n\n".join([f"[{d['source']}:{d['source_id']}]\n{d['content']}" for d in docs])
+    context_text = "\n\n".join([
+        f"[{d['source']}:{d.get('source_display') or d['source_id']}]\n{d['content']}"
+        for d in docs
+    ])
 
     # 3. Build prompt
     system_prompt = (
