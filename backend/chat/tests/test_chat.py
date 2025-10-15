@@ -1,3 +1,4 @@
+import json
 import os
 from typing import List
 from unittest.mock import patch
@@ -23,7 +24,7 @@ from chat.models import (
     JiraComment,
 )
 from chat.utils.embeddings import search_documents
-from chat.utils.jira import ingest_jira_issue
+from chat.utils.jira import extract_plain_text_from_adf, fetch_jira_issues, ingest_jira_issue
 from django.utils import timezone
 
 
@@ -291,6 +292,108 @@ class JiraIngestionSourceTests(TestCase):
         self.assertIn("Completion summary: Issue completed and resolved.", top_result["content"])
         self.assertIn(resolved_at.isoformat(), top_result["content"])
         self.assertTrue(mock_embed_text.called)
+
+
+class JiraADFDescriptionTests(TestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="ADF Co")
+        self.chatbot = ChatBotInstance.objects.create(
+            company=self.company,
+            name="ADF Bot",
+        )
+        self.credential = Credential.objects.create(
+            company=self.company,
+            name="ADF Cred",
+            email="adf@example.com",
+            _api_key="placeholder",
+        )
+        self.sync = JiraSync.objects.create(
+            chatBot=self.chatbot,
+            board_url="https://example.atlassian.net/jira/software/c/projects/ADF/boards/1",
+            credential=self.credential,
+        )
+
+    @patch("chat.utils.embeddings.embed_text", return_value=[0.0] * 1536)
+    @patch("chat.utils.jira.fetch_comments", return_value=[])
+    @patch("chat.utils.jira.fetch_board_filter_jql", return_value=None)
+    @patch("chat.utils.jira._log_request_response")
+    @patch("chat.utils.jira.decrypt_api_key", return_value="test-token")
+    def test_sync_pipeline_normalizes_adf_description(
+        self,
+        _mock_decrypt,
+        mock_log_request,
+        _mock_fetch_board_jql,
+        _mock_fetch_comments,
+        _mock_embed_text,
+    ):
+        class _MockResponse:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+                self.text = json.dumps(payload)
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                return None
+
+        adf_description = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "ADF plain text"},
+                    ],
+                }
+            ],
+        }
+        plain_text = extract_plain_text_from_adf(adf_description)
+
+        payload = {
+            "issues": [
+                {
+                    "key": "ADF-1",
+                    "fields": {
+                        "summary": "ADF Issue",
+                        "description": adf_description,
+                        "status": {"name": "To Do"},
+                        "created": "2024-01-01T00:00:00.000+0000",
+                        "updated": "2024-01-01T01:00:00.000+0000",
+                    },
+                }
+            ],
+            "isLast": True,
+            "total": 1,
+            "maxResults": 50,
+        }
+        mock_log_request.return_value = _MockResponse(payload)
+
+        processed, _, _ = fetch_jira_issues(self.sync)
+
+        self.assertEqual(len(processed), 1)
+
+        issue_obj, comments = processed[0]
+        issue_obj.refresh_from_db()
+        self.assertEqual(issue_obj.description, plain_text)
+
+        ingest_jira_issue(
+            company=self.company,
+            chatbot=self.chatbot,
+            issue=issue_obj,
+            comments=comments,
+        )
+
+        issue_document = Document.objects.get(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="jira_issue",
+            source_id=issue_obj.issue_key,
+        )
+
+        self.assertIn(plain_text, issue_document.content)
 
 
 class ChatbotAccessAPITests(APITestCase):

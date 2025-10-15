@@ -203,6 +203,29 @@ def extract_plain_text_from_adf(document: Union[dict, list, None]) -> str:
     _walk(document, collected)
     return "".join(collected).strip()
 
+
+def _normalize_jira_description(value: Any) -> str:
+    """Normalize Jira issue descriptions to plain text.
+
+    The Jira REST API may return descriptions as either raw strings or Atlassian
+    Document Format (ADF) structures.  This helper converts supported
+    structures into their plain text representation while preserving existing
+    strings.  Unknown objects are coerced to strings so that callers can safely
+    work with the result without needing to perform additional type checks.
+    """
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (dict, list)):
+        plain_text = extract_plain_text_from_adf(value)
+        return plain_text or ""
+
+    if value is None:
+        return ""
+
+    return str(value)
+
 def extract_project_key(board_url):
     # Example: https://yourdomain.atlassian.net/jira/software/c/projects/CPG/boards/1
     # Extract 'CPG' between /projects/ and /boards/
@@ -588,7 +611,7 @@ def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraCo
         remote_issue_keys.add(issue_key)
 
         summary = fields.get("summary", "")
-        description = fields.get("description", "") or ""
+        description = _normalize_jira_description(fields.get("description"))
         status_info = fields.get("status") or {}
         status_name = status_info.get("name", "") if isinstance(status_info, Mapping) else ""
         status_category_info = status_info.get("statusCategory") if isinstance(status_info, Mapping) else None
@@ -709,7 +732,7 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
             return str(value)
 
     summary = (issue.summary or "").strip() or issue.issue_key
-    description_raw = issue.description or ""
+    description_raw = _normalize_jira_description(getattr(issue, "description", ""))
     description = description_raw.strip() or "No description provided."
 
     metadata_lines: List[str] = [f"Key: {issue.issue_key}"]
