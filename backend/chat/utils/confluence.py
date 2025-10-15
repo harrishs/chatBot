@@ -164,6 +164,11 @@ def extract_space_key(space_url):
         logger.exception("Error extracting Confluence space key from URL")
     return ""
 
+def _build_confluence_document_source_id(page: ConfluencePage) -> Optional[str]:
+    """Return a stable, human-friendly identifier for a Confluence page."""
+    return page.url or page.remote_id
+
+
 def _delete_documents_for_source_ids(base_ids: Iterable[str]) -> int:
     deleted = 0
     for base_id in base_ids:
@@ -333,11 +338,19 @@ def ingest_confluence_pages(sync: ConfluenceSync, pages: Iterable[ConfluencePage
     pages_to_ingest = list(pages) if pages is not None else list(ConfluencePage.objects.filter(sync=sync))
     documents_created = 0
     for page in pages_to_ingest:
+        stable_source_id = _build_confluence_document_source_id(page)
+        legacy_ids: List[str] = []
+        if page.pk is not None:
+            legacy_ids.append(str(page.pk))
+
+        if legacy_ids:
+            _delete_documents_for_source_ids(legacy_ids)
+
         docs = save_document(
             company=sync.chatBot.company,
             chatbot=sync.chatBot,
             source="confluence",
-            source_id=page.id,
+            source_id=stable_source_id or str(page.pk),
             content=page.content
         )
         documents_created += len(docs)
@@ -365,7 +378,17 @@ def cleanup_removed_confluence_pages(
     if not pages_to_delete:
         return 0
 
-    _delete_documents_for_source_ids([page.pk for page in pages_to_delete])
+    source_ids_to_delete: List[str] = []
+    for page in pages_to_delete:
+        stable_id = _build_confluence_document_source_id(page)
+        if stable_id:
+            source_ids_to_delete.append(stable_id)
+        if page.pk is not None:
+            pk_id = str(page.pk)
+            if pk_id != stable_id:
+                source_ids_to_delete.append(pk_id)
+
+    _delete_documents_for_source_ids(source_ids_to_delete)
     ConfluencePage.objects.filter(pk__in=[page.pk for page in pages_to_delete]).delete()
 
     return len(pages_to_delete)

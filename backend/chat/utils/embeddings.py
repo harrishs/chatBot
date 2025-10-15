@@ -89,6 +89,13 @@ def chunk_text(text, max_tokens=1000):
         start = end
     return chunks
 
+
+def _normalize_source_id(source_id: str) -> str:
+    if not source_id:
+        return source_id
+    return source_id.split("_part_", 1)[0]
+
+
 def save_document(company, chatbot, source, source_id, content):
     """
     Save a document with its embedding to the database.
@@ -150,6 +157,10 @@ def search_documents(company_id, chatbot_id, query, top_k=5):
                 "id": doc.id,
                 "source": doc.source,
                 "source_id": doc.source_id,
+                "source_display": _normalize_source_id(doc.source_id),
+                "source_url": _normalize_source_id(doc.source_id)
+                if _normalize_source_id(doc.source_id).startswith("http")
+                else None,
                 "content": doc.content,
                 "similarity": float(scores.get(doc.id)),
             }
@@ -175,6 +186,10 @@ def search_documents(company_id, chatbot_id, query, top_k=5):
             "id": doc.id,
             "source": doc.source,
             "source_id": doc.source_id,
+            "source_display": _normalize_source_id(doc.source_id),
+            "source_url": _normalize_source_id(doc.source_id)
+            if _normalize_source_id(doc.source_id).startswith("http")
+            else None,
             "content": doc.content,
             "similarity": float(doc.similarity) if doc.similarity is not None else None,
         }

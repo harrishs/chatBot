@@ -438,6 +438,13 @@ def _delete_documents_for_source_ids(source: str, base_ids: Iterable[str]) -> in
     return deleted
 
 
+def _build_jira_comment_source_id(issue_key: str, comment: JiraComment) -> str:
+    token = comment.remote_id or (
+        comment.created_at.isoformat() if comment.created_at else str(comment.pk)
+    )
+    return f"{issue_key}#comment#{token}"
+
+
 def fetch_jira_issues(sync: JiraSync) -> Tuple[List[Tuple[JiraIssue, List[JiraComment]]], Set[str], Dict[str, Set[str]]]:
     api_key = decrypt_api_key(sync.credential._api_key)
     project_key = extract_project_key(sync.board_url)
@@ -748,7 +755,15 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
 
     if comments:
         for comment in comments:
-            comment_id = f"{issue_id}_comment_{comment.id}"
+            comment_id = _build_jira_comment_source_id(issue.issue_key, comment)
+            legacy_ids: List[str] = []
+            legacy_id = f"{issue.issue_key}_comment_{comment.id}"
+            if legacy_id != comment_id:
+                legacy_ids.append(legacy_id)
+
+            if legacy_ids:
+                _delete_documents_for_source_ids("jira_comment", legacy_ids)
+
             comment_content = f"Comment by {comment.author} on {comment.created_at}:\n{comment.content}"
             comment_documents = save_document(
                 company=company,
@@ -778,10 +793,16 @@ def cleanup_removed_jira_content(
         issue_keys = [issue.issue_key for issue in issues_to_remove]
 
         for issue in issues_to_remove:
-            comment_ids = list(issue.comments.values_list("id", flat=True))
-            if comment_ids:
-                comment_source_ids = [f"{issue.issue_key}_comment_{comment_id}" for comment_id in comment_ids]
-                deleted_comments += len(comment_ids)
+            comments = list(issue.comments.all())
+            if comments:
+                comment_source_ids: List[str] = []
+                for comment in comments:
+                    stable_id = _build_jira_comment_source_id(issue.issue_key, comment)
+                    comment_source_ids.append(stable_id)
+                    legacy_id = f"{issue.issue_key}_comment_{comment.pk}"
+                    if legacy_id != stable_id:
+                        comment_source_ids.append(legacy_id)
+                deleted_comments += len(comments)
                 _delete_documents_for_source_ids("jira_comment", comment_source_ids)
 
         _delete_documents_for_source_ids("jira_issue", issue_keys)
@@ -813,8 +834,12 @@ def cleanup_removed_jira_content(
             continue
 
         for comment in comments_to_delete:
-            base_id = f"{issue.issue_key}_comment_{comment.pk}"
-            _delete_documents_for_source_ids("jira_comment", [base_id])
+            base_id = _build_jira_comment_source_id(issue.issue_key, comment)
+            ids_to_remove = [base_id]
+            legacy_id = f"{issue.issue_key}_comment_{comment.pk}"
+            if legacy_id != base_id:
+                ids_to_remove.append(legacy_id)
+            _delete_documents_for_source_ids("jira_comment", ids_to_remove)
         deleted_comments += len(comments_to_delete)
         issue.comments.filter(pk__in=[comment.pk for comment in comments_to_delete]).delete()
 
