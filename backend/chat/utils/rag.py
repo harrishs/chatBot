@@ -126,7 +126,8 @@ def _metadata_from_document(document: Dict) -> Dict:
     if summary:
         metadata["summary"] = summary
 
-    keywords = _extract_keywords(content)
+    keyword_source = summary or summary_source
+    keywords = _extract_keywords(keyword_source) if keyword_source else []
     if keywords:
         metadata["keywords"] = ", ".join(keywords)
 
