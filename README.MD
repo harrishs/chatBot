@@ -70,6 +70,20 @@ docker compose up backend worker
 The backend will enqueue sync jobs in the database and the worker will process
 them in the background.
 
+### Frontend dependencies
+
+The repository intentionally ignores `frontend/node_modules/` so dependency
+artifacts are not committed. Run the following before starting the Vite dev
+server or building the frontend locally:
+
+```bash
+cd frontend
+npm install
+```
+
+Docker-based workflows execute the install step automatically inside the build
+context, but local development requires running `npm install` manually.
+
 ### Production / EC2 deployments
 
 The production compose file already defines the `worker` service. Start or
