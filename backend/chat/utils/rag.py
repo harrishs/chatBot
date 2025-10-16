@@ -106,7 +106,17 @@ def _metadata_from_document(document: Dict) -> Dict:
     lines = [line.strip() for line in content.splitlines() if line.strip()]
 
     title = lines[0][:120] if lines else ""
-    summary_source = " ".join(lines[:8]) if lines else ""
+
+    summary_lines: List[str] = []
+    if lines:
+        summary_lines.extend(lines[:8])
+
+        important_prefixes = ("Resolved at", "Completion summary")
+        for line in lines[8:]:
+            if line.startswith(important_prefixes) and line not in summary_lines:
+                summary_lines.append(line)
+
+    summary_source = " ".join(summary_lines) if summary_lines else ""
     summary = _truncate_text(summary_source, 320)
 
     metadata = {
