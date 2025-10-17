@@ -5,6 +5,7 @@ from .models import Company, ChatBotInstance, JiraSync, ConfluenceSync, ChatFeed
 from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncSerializer, ConfluenceSyncSerializer, ChatFeedbackSerializer, UserSerializer, CredentialSerializer, GitCredentialSerializer, GitCredentialSummarySerializer, GitRepoSyncSerializer, GitRepoFileSerializer
 from django.contrib.auth import get_user_model
 import logging
+import re
 from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
@@ -27,6 +28,13 @@ ACTIVE_SYNC_STATUSES = (
     SyncStatusMixin.Status.QUEUED,
     SyncStatusMixin.Status.RUNNING,
 )
+
+
+DEFAULT_CHAT_TOP_K = 5
+ENUMERATION_TOP_K = 15
+MAX_CHAT_TOP_K = 25
+_ENUMERATION_TOKENS = {"all", "list", "every", "everything", "entire", "complete"}
+_ENUMERATION_PHRASES = ("full list", "entire list", "complete list")
 
 
 def _build_sync_status_response(sync):
@@ -575,7 +583,7 @@ def query_documents(request, chatbot_id):
     query = request.data.get("query")
     company_id = request.user.company_id
     try:
-        top_k = int(request.data.get("top_k", 5))
+        top_k = int(request.data.get("top_k", DEFAULT_CHAT_TOP_K))
     except (TypeError, ValueError):
         raise ValidationError({"top_k": ["Must be an integer greater than or equal to 1."]})
     if top_k < 1:
@@ -590,6 +598,17 @@ def query_documents(request, chatbot_id):
         logger.error(f"Error querying documents: {e}")
         return Response({"error": "Failed to query documents"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+def _contains_enumeration_language(query: str) -> bool:
+    """Return True when ``query`` asks for exhaustive listings."""
+
+    lowered = query.lower()
+    tokens = set(re.findall(r"\b\w+\b", lowered))
+    if tokens & _ENUMERATION_TOKENS:
+        return True
+
+    return any(phrase in lowered for phrase in _ENUMERATION_PHRASES)
+
+
 @api_view(['POST'])
 def chat_with_bot(request, chatbot_id):
     """
@@ -597,7 +616,8 @@ def chat_with_bot(request, chatbot_id):
 
     Example POST:
     {
-        "query": "How do I deploy the app with Docker?"
+        "query": "How do I deploy the app with Docker?",
+        "top_k": 5
     }
     """
     chatbot = get_object_or_404(
@@ -608,8 +628,29 @@ def chat_with_bot(request, chatbot_id):
     if not query:
         return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
 
+    top_k_value = request.data.get("top_k", DEFAULT_CHAT_TOP_K)
     try:
-        response = generate_answer(company_id, chatbot.id, query, top_k=5)
+        top_k = int(top_k_value)
+    except (TypeError, ValueError):
+        raise ValidationError({"top_k": ["Must be an integer greater than or equal to 1."]})
+
+    if top_k < 1:
+        raise ValidationError({"top_k": ["Must be an integer greater than or equal to 1."]})
+
+    top_k = min(top_k, MAX_CHAT_TOP_K)
+
+    effective_top_k = top_k
+    if _contains_enumeration_language(query):
+        effective_top_k = max(effective_top_k, ENUMERATION_TOP_K)
+        effective_top_k = min(effective_top_k, MAX_CHAT_TOP_K)
+
+    try:
+        response = generate_answer(
+            company_id,
+            chatbot.id,
+            query,
+            top_k=effective_top_k,
+        )
         return Response(response)
     except Exception as e:
         logger.error(f"Error generating answer: {e}")
