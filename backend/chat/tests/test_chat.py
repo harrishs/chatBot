@@ -25,6 +25,7 @@ from chat.models import (
 )
 from chat.utils.embeddings import search_documents
 from chat.utils.jira import extract_plain_text_from_adf, fetch_jira_issues, ingest_jira_issue
+from chat.utils.rag import _metadata_from_document
 from django.utils import timezone
 
 
@@ -394,6 +395,36 @@ class JiraADFDescriptionTests(TestCase):
         )
 
         self.assertIn(plain_text, issue_document.content)
+
+
+class RagMetadataSummaryTests(TestCase):
+    def test_metadata_summary_includes_resolved_line(self):
+        content_lines = [
+            "Issue details:",
+            "Line 2",
+            "Line 3",
+            "Line 4",
+            "Line 5",
+            "Line 6",
+            "Line 7",
+            "Line 8",
+            "Background information continues.",
+            "Resolved at: 2024-06-05T12:34:56Z",
+            "Completion summary: Issue closed successfully.",
+        ]
+        document = {
+            "id": 1,
+            "source": "jira_issue",
+            "source_id": "TEST-123",
+            "source_display": "TEST-123",
+            "content": "\n".join(content_lines),
+        }
+
+        metadata = _metadata_from_document(document)
+
+        summary = metadata.get("summary", "")
+        self.assertIn("Resolved at: 2024-06-05T12:34:56Z", summary)
+        self.assertIn("Completion summary: Issue closed successfully.", summary)
 
 
 class ChatbotAccessAPITests(APITestCase):
