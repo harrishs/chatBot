@@ -1,7 +1,7 @@
 import json
 import os
 from typing import List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -27,6 +27,7 @@ from chat.utils.embeddings import search_documents
 from chat.utils.jira import extract_plain_text_from_adf, fetch_jira_issues, ingest_jira_issue
 from chat.utils.rag import _metadata_from_document
 from django.utils import timezone
+from chat.views import DEFAULT_CHAT_TOP_K, ENUMERATION_TOP_K
 
 
 os.environ.setdefault("ENCRYPTION_KEY", "8wfsecdopt6Fz6ZRlo6RLWF2zOWITlzv9uVSXnscJFA=")
@@ -529,8 +530,74 @@ class ChatbotAccessAPITests(APITestCase):
             self.company.id,
             self.chatbot.id,
             "Hello",
-            top_k=5,
+            top_k=DEFAULT_CHAT_TOP_K,
         )
+
+    @patch("chat.utils.rag.get_openai_client")
+    @patch("chat.utils.rag.search_documents")
+    def test_chat_with_bot_expands_top_k_for_enumeration_queries(
+        self,
+        mock_search_documents,
+        mock_get_openai_client,
+    ):
+        mock_search_documents.return_value = [
+            {"id": 1, "source": "test", "source_id": "DOC-1", "content": ""}
+        ]
+
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "Response"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_completion = MagicMock()
+        mock_completion.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_completion
+        mock_get_openai_client.return_value = mock_client
+
+        with self.settings(OPENAI_API_KEY="test-key"):
+            response = self.client.post(
+                self.chat_url,
+                {"query": "List all sync jobs"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_search_documents.assert_called_once()
+        called_args = mock_search_documents.call_args[0]
+        self.assertEqual(called_args[3], ENUMERATION_TOP_K)
+
+    @patch("chat.utils.rag.get_openai_client")
+    @patch("chat.utils.rag.search_documents")
+    def test_chat_with_bot_uses_default_top_k_for_standard_queries(
+        self,
+        mock_search_documents,
+        mock_get_openai_client,
+    ):
+        mock_search_documents.return_value = [
+            {"id": 1, "source": "test", "source_id": "DOC-1", "content": ""}
+        ]
+
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "Response"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_completion = MagicMock()
+        mock_completion.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_completion
+        mock_get_openai_client.return_value = mock_client
+
+        with self.settings(OPENAI_API_KEY="test-key"):
+            response = self.client.post(
+                self.chat_url,
+                {"query": "How do I deploy the app?"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_search_documents.assert_called_once()
+        called_args = mock_search_documents.call_args[0]
+        self.assertEqual(called_args[3], DEFAULT_CHAT_TOP_K)
 
     @patch("chat.views.generate_answer")
     def test_chat_with_bot_other_company_chatbot_returns_404(self, mock_generate_answer):
