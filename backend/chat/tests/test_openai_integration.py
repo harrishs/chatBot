@@ -86,6 +86,7 @@ class GenerateAnswerTests(SimpleTestCase):
                     "source_url": "https://example.atlassian.net/browse/PROJ-1",
                 },
                 "similarity": 0.91,
+                "combined_score": 0.91,
             }
         ]
 
@@ -98,6 +99,12 @@ class GenerateAnswerTests(SimpleTestCase):
 
         self.assertEqual(result["answer"], "final answer referencing [jira:PROJ-1]")
         self.assertEqual(len(result["sources"]), 1)
+        self.assertGreaterEqual(result["confidence"], 0.9)
+        self.assertAlmostEqual(result["retrieval_confidence"], 0.91)
+        self.assertIn("drafts", result)
+        self.assertGreaterEqual(len(result["drafts"]), 1)
+        self.assertEqual(result["drafts"][0]["answer"], result["answer"])
+        self.assertIn("[jira:PROJ-1]", result["drafts"][0]["citations"])
         metadata_entry = result["sources"][0]
         self.assertEqual(metadata_entry["source"], "jira")
         self.assertEqual(metadata_entry["source_id"], "PROJ-1")
@@ -119,6 +126,7 @@ class GenerateAnswerTests(SimpleTestCase):
         user_content = next(item["content"] for item in messages if item["role"] == "user")
         self.assertIn("Title: Issue title", user_content)
         self.assertIn("Snippet:\nIssue title\nA concise update about the fix.", user_content)
+        self.assertNotIn("n", mock_client.chat.completions.create.call_args.kwargs)
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_rate_limit_error(self):
@@ -311,6 +319,62 @@ class GenerateAnswerTests(SimpleTestCase):
         self.assertIn("token= [redacted sensitive data]", result["answer"])
         self.assertIn("[github:app/config.yaml]", result["answer"])
         self.assertNotIn("abc12345", result["answer"])
+
+    @override_settings(OPENAI_API_KEY="test-key")
+    def test_low_confidence_drafts_prefer_cited_response(self):
+        mock_client = Mock()
+        mock_choices = [
+            SimpleNamespace(message=SimpleNamespace(content="I don't know.")),
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="The incident has been resolved [jira:PROJ-2]"
+                )
+            ),
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Resolution confirmed [jira:PROJ-2]"
+                )
+            ),
+        ]
+        mock_response = SimpleNamespace(choices=mock_choices)
+        mock_client.chat.completions.create.return_value = mock_response
+
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-2",
+                "source_display": "PROJ-2",
+                "content": "Resolution summary",
+                "metadata": {
+                    "title": "Resolution summary",
+                    "chunk_text": "Ticket resolved successfully",
+                    "chunk_index": 0,
+                    "chunk_count": 1,
+                },
+                "similarity": 0.2,
+                "combined_score": 0.2,
+            }
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ), patch("chat.utils.rag.rerank_documents", return_value=documents):
+            result = rag.generate_answer(
+                company_id=1, chatbot_id=2, query="Give me the latest status"
+            )
+
+        self.assertTrue(result["reasoning_trace"]["low_confidence_mode"])
+        self.assertGreaterEqual(result["confidence"], result["retrieval_confidence"])
+        self.assertIn("[jira:PROJ-2]", result["answer"])
+        self.assertEqual(result["drafts"][0]["contains_uncertainty"], True)
+        self.assertGreater(
+            result["drafts"][1]["score"],
+            result["drafts"][0]["score"],
+        )
+        self.assertEqual(
+            mock_client.chat.completions.create.call_args.kwargs.get("n"),
+            3,
+        )
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_network_error(self):
