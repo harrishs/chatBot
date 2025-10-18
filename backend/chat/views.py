@@ -644,12 +644,54 @@ def chat_with_bot(request, chatbot_id):
         effective_top_k = max(effective_top_k, ENUMERATION_TOP_K)
         effective_top_k = min(effective_top_k, MAX_CHAT_TOP_K)
 
+    history_data = request.data.get("history")
+    validated_history = []
+    if history_data is not None:
+        if not isinstance(history_data, list):
+            raise ValidationError({"history": ["Must be a list of prior turns."]})
+
+        for index, turn in enumerate(history_data):
+            if not isinstance(turn, dict):
+                raise ValidationError(
+                    {"history": [f"Turn {index + 1} must be an object with chatbot_id, user, and assistant fields."]}
+                )
+
+            turn_chatbot_id = turn.get("chatbot_id")
+            if turn_chatbot_id != chatbot.id:
+                raise ValidationError(
+                    {
+                        "history": [
+                            f"Turn {index + 1} references chatbot {turn_chatbot_id}, which does not match chatbot {chatbot.id}."
+                        ]
+                    }
+                )
+
+            user_message = turn.get("user")
+            assistant_message = turn.get("assistant")
+
+            if not isinstance(user_message, str) or not user_message.strip():
+                raise ValidationError(
+                    {"history": [f"Turn {index + 1} must include a non-empty user message."]}
+                )
+
+            if assistant_message is not None and not isinstance(assistant_message, str):
+                raise ValidationError(
+                    {"history": [f"Turn {index + 1} assistant message must be a string if provided."]}
+                )
+
+            cleaned_turn = {
+                "user": user_message.strip(),
+                "assistant": (assistant_message or "").strip(),
+            }
+            validated_history.append(cleaned_turn)
+
     try:
         response = generate_answer(
             company_id,
             chatbot.id,
             query,
             top_k=effective_top_k,
+            history=validated_history,
         )
         return Response(response)
     except Exception as e:

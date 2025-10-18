@@ -4,7 +4,7 @@ from typing import List
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework import status
@@ -25,6 +25,7 @@ from chat.models import (
 )
 from chat.utils.embeddings import search_documents
 from chat.utils.jira import extract_plain_text_from_adf, fetch_jira_issues, ingest_jira_issue
+from chat.utils import rag
 from chat.utils.rag import _metadata_from_document
 from django.utils import timezone
 from chat.views import DEFAULT_CHAT_TOP_K, ENUMERATION_TOP_K
@@ -531,7 +532,64 @@ class ChatbotAccessAPITests(APITestCase):
             self.chatbot.id,
             "Hello",
             top_k=DEFAULT_CHAT_TOP_K,
+            history=[],
         )
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_accepts_history_for_same_chatbot(self, mock_generate_answer):
+        mock_generate_answer.return_value = {"answer": "Sure"}
+
+        payload = {
+            "query": "What about deployment?",
+            "history": [
+                {
+                    "chatbot_id": self.chatbot.id,
+                    "user": "Hi there",
+                    "assistant": "Hello!",
+                },
+                {
+                    "chatbot_id": self.chatbot.id,
+                    "user": "Can you summarize onboarding? ",
+                    "assistant": "Here is a summary.",
+                },
+            ],
+        }
+
+        response = self.client.post(self.chat_url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_generate_answer.assert_called_once()
+        called_kwargs = mock_generate_answer.call_args.kwargs
+        self.assertEqual(
+            called_kwargs,
+            {
+                "top_k": DEFAULT_CHAT_TOP_K,
+                "history": [
+                    {"user": "Hi there", "assistant": "Hello!"},
+                    {"user": "Can you summarize onboarding?", "assistant": "Here is a summary."},
+                ],
+            },
+        )
+        called_args = mock_generate_answer.call_args.args
+        self.assertEqual(called_args, (self.company.id, self.chatbot.id, "What about deployment?"))
+
+    def test_chat_with_bot_rejects_history_for_wrong_chatbot(self):
+        payload = {
+            "query": "What about deployment?",
+            "history": [
+                {
+                    "chatbot_id": self.other_chatbot.id,
+                    "user": "Hi",
+                    "assistant": "Hello",
+                }
+            ],
+        }
+
+        response = self.client.post(self.chat_url, payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("history", response.data)
+        self.assertIn("does not match chatbot", response.data["history"][0])
 
     @patch("chat.utils.rag.get_openai_client")
     @patch("chat.utils.rag.search_documents")
@@ -657,6 +715,7 @@ class SyncCredentialPermissionTests(TestCase):
         response = self.client.post(url, payload, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
 
     def test_jira_sync_create_with_foreign_chatbot_returns_404(self):
         foreign_chatbot = ChatBotInstance.objects.create(
@@ -851,6 +910,46 @@ class SyncCredentialValidationTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('chatbot', response.data)
+
+
+class ChatHistoryPromptLimitsTests(TestCase):
+    @override_settings(OPENAI_API_KEY="test-key")
+    @patch("chat.utils.rag.search_documents", return_value=[])
+    @patch("chat.utils.rag.get_openai_client")
+    def test_generate_answer_truncates_history_before_prompt(
+        self,
+        mock_get_openai_client,
+        mock_search_documents,
+    ):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "Final"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_completion = MagicMock()
+        mock_completion.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_completion
+        mock_get_openai_client.return_value = mock_client
+
+        long_segment = " detail" * 400
+        history = [
+            {"user": f"Turn {idx} user{long_segment}", "assistant": f"Turn {idx} assistant"}
+            for idx in range(8)
+        ]
+
+        rag.generate_answer(company_id=1, chatbot_id=2, query="next?", history=history)
+
+        messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        user_content = next(item["content"] for item in messages if item["role"] == "user")
+
+        self.assertIn("Recent conversation (most recent last):", user_content)
+        self.assertIn("Turn 7 user", user_content)
+        self.assertIn("Assist", user_content)
+        self.assertNotIn("Turn 0 user", user_content)
+
+        history_section = user_content.split("Metadata entries:")[0]
+        self.assertLessEqual(len(history_section), rag._MAX_HISTORY_CHARACTERS + 60)
+        self.assertTrue(history_section.strip().endswith("…"))
 
 
 class CompanyPermissionsTests(APITestCase):
