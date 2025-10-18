@@ -334,6 +334,8 @@ class DocumentChunkingMetadataTests(TestCase):
         self.assertEqual(stored_doc.metadata.get("title"), "Guide to Setup")
         self.assertEqual(stored_doc.metadata.get("path"), "docs/guide.md")
         self.assertEqual(stored_doc.metadata.get("section_heading"), "Heading One")
+        self.assertIn("This guide explains setup steps", stored_doc.metadata.get("chunk_text"))
+        self.assertGreater(stored_doc.metadata.get("chunk_tokens", 0), 0)
 
         results = search_documents(
             company_id=self.company.id,
@@ -374,6 +376,8 @@ class DocumentChunkingMetadataTests(TestCase):
             self.assertEqual(doc.metadata.get("chunk_index"), idx)
             self.assertEqual(doc.metadata.get("chunk_count"), len(docs))
             self.assertEqual(doc.metadata.get("section_heading"), "Heading One")
+            self.assertTrue(doc.metadata.get("chunk_text"))
+            self.assertGreater(doc.metadata.get("chunk_tokens", 0), 0)
 
         def extract_body(text):
             parts = text.split("\n\n", 1)

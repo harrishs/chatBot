@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 _shared_openai_client = None
 
+_MAX_CHUNK_TEXT_CHARACTERS = 1800
+
 
 def get_openai_client() -> OpenAI:
     """Return a shared OpenAI client instance configured from settings."""
@@ -185,6 +187,20 @@ def _normalize_metadata(metadata: Optional[Mapping[str, object]]) -> Dict[str, o
             normalized[str(key)] = str(value)
 
     return normalized
+
+
+def _bounded_chunk_text(value: str, max_characters: int = _MAX_CHUNK_TEXT_CHARACTERS) -> str:
+    """Return ``value`` trimmed to ``max_characters`` while preserving newlines."""
+
+    if not value:
+        return ""
+
+    normalized = value.strip("\n")
+    if len(normalized) <= max_characters:
+        return normalized
+
+    truncated = normalized[:max_characters].rstrip()
+    return f"{truncated}…"
 
 
 def _split_paragraphs_with_headings(text: str) -> List[Tuple[str, Optional[str]]]:
@@ -391,6 +407,12 @@ def save_document(
             chunk_metadata["section_heading"] = heading_value
         chunk_metadata["chunk_index"] = idx
         chunk_metadata["chunk_count"] = total_segments
+
+        bounded_text = _bounded_chunk_text(segment_text)
+        if bounded_text:
+            chunk_metadata["chunk_text"] = bounded_text
+            chunk_metadata["chunk_char_count"] = len(segment_text)
+            chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
 
         metadata_text = _format_metadata_for_embedding(chunk_metadata)
         embedding_input = segment_text.strip()
