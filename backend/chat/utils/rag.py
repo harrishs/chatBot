@@ -223,7 +223,10 @@ def _metadata_from_document(document: Dict) -> Dict:
 
     stored_metadata = document.get("metadata") or {}
 
-    raw_chunk_text = stored_metadata.get("chunk_text") or (document.get("content") or "")
+    raw_chunk_text = stored_metadata.get("chunk_text")
+    if raw_chunk_text is None:
+        raw_chunk_text = document.get("content") or ""
+
     sanitized_chunk = _redact_sensitive_snippet(raw_chunk_text)
     snippet = _limit_snippet(sanitized_chunk)
 
@@ -276,18 +279,23 @@ def _metadata_from_document(document: Dict) -> Dict:
         metadata["summary"] = summary
     if excerpt:
         metadata["excerpt"] = excerpt
+    if sanitized_chunk:
+        metadata["chunk_text"] = sanitized_chunk
     if snippet:
         metadata["snippet"] = snippet
 
-    for key in (
-        "path",
-        "space_key",
-        "section_heading",
-        "chunk_index",
-        "chunk_count",
-        "chunk_tokens",
-        "chunk_char_count",
-    ):
+    def _coerce_int(value: object) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    for key in ("chunk_index", "chunk_count", "chunk_tokens", "chunk_char_count"):
+        coerced = _coerce_int(stored_metadata.get(key))
+        if coerced is not None:
+            metadata[key] = coerced
+
+    for key in ("path", "space_key", "section_heading"):
         value = stored_metadata.get(key)
         if value not in (None, ""):
             metadata[key] = value
@@ -305,54 +313,75 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
 
     label_identifier = metadata.get("source_display") or metadata.get("source_id") or "unknown"
     label_source = metadata.get("source") or "source"
-    sections = [f"[{label_source}:{label_identifier}]"]
+
+    lines: List[str] = [f"[{label_source}:{label_identifier}]"]
+
+    detail_lines: List[str] = []
+
+    def _append_detail(label: str, value: object) -> None:
+        if value in (None, ""):
+            return
+        detail_lines.append(f"- {label}: {value}")
 
     title = metadata.get("title")
     if title:
-        sections.append(f"Title: {title}")
+        _append_detail("Title", title)
 
     section_heading = metadata.get("section_heading")
     if section_heading and section_heading != title:
-        sections.append(f"Section: {section_heading}")
+        _append_detail("Section", section_heading)
 
     path = metadata.get("path")
     if path:
-        sections.append(f"Path: {path}")
+        _append_detail("Path", path)
 
     space_key = metadata.get("space_key")
     if space_key:
-        sections.append(f"Space: {space_key}")
+        _append_detail("Space", space_key)
 
     chunk_index = metadata.get("chunk_index")
     chunk_count = metadata.get("chunk_count")
     if isinstance(chunk_index, int) and isinstance(chunk_count, int):
-        sections.append(f"Chunk: {chunk_index + 1} of {chunk_count}")
+        _append_detail("Chunk", f"{chunk_index + 1} of {chunk_count}")
     elif isinstance(chunk_index, int):
-        sections.append(f"Chunk index: {chunk_index}")
+        _append_detail("Chunk index", chunk_index)
 
     summary = metadata.get("summary")
     if summary and summary != title:
-        sections.append(f"Summary: {summary}")
+        _append_detail("Summary", summary)
 
     source_url = metadata.get("source_url")
     if source_url:
-        sections.append(f"URL: {source_url}")
+        _append_detail("URL", source_url)
 
     similarity = metadata.get("similarity")
     if isinstance(similarity, float):
-        sections.append(f"Similarity: {similarity:.3f}")
+        _append_detail("Similarity", f"{similarity:.3f}")
 
     keywords = metadata.get("keywords")
     if keywords:
-        sections.append(f"Keywords: {keywords}")
+        _append_detail("Keywords", keywords)
 
-    snippet = metadata.get("snippet") or metadata.get("excerpt")
+    chunk_tokens = metadata.get("chunk_tokens")
+    if isinstance(chunk_tokens, int) and chunk_tokens > 0:
+        _append_detail("Chunk tokens", chunk_tokens)
+
+    chunk_char_count = metadata.get("chunk_char_count")
+    if isinstance(chunk_char_count, int) and chunk_char_count > 0:
+        _append_detail("Chunk characters", chunk_char_count)
+
+    if detail_lines:
+        lines.append("Metadata:")
+        lines.extend(detail_lines)
+
+    snippet = metadata.get("snippet") or metadata.get("chunk_text") or metadata.get("excerpt")
     if snippet:
-        sections.append("")
-        sections.append("Snippet:")
-        sections.append(snippet)
+        if detail_lines:
+            lines.append("")
+        lines.append("Snippet:")
+        lines.append(snippet)
 
-    return "\n".join(sections)
+    return "\n".join(lines)
 
 
 def _collect_citations(metadata_list: List[Dict]) -> List[str]:
@@ -633,7 +662,7 @@ def generate_answer(
     )
     user_prompt = (
         f"{history_section}"
-        "Metadata entries:\n"
+        "Metadata entries (each includes contextual fields followed by a Snippet with the actual text excerpt):\n"
         f"{context_text}\n\n"
         f"Question: {query}\n\n"
         "Respond concisely, cite the sources using their [source:identifier] labels, and do not reveal code or secrets."
