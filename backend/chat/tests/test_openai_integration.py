@@ -140,7 +140,15 @@ class GenerateAnswerTests(SimpleTestCase):
         mock_client = Mock()
         mock_choice = SimpleNamespace(
             message=SimpleNamespace(
-                content="Here is what you asked:\n```python\nprint('secret')\n```"
+                content=(
+                    "Here is what you asked:\n"
+                    "```bash\n"
+                    "echo 'ready'\n"
+                    "api_key=super-secret\n"
+                    "```\n"
+                    "Remember to run `npm install`.\n"
+                    "Do not expose sk-1234567890abcdefghijkl."
+                )
             )
         )
         mock_response = SimpleNamespace(choices=[mock_choice])
@@ -168,9 +176,14 @@ class GenerateAnswerTests(SimpleTestCase):
         ), patch("chat.utils.rag.rerank_documents", return_value=documents):
             result = rag.generate_answer(company_id=1, chatbot_id=2, query="Show me the code")
 
-        self.assertNotIn("```", result["answer"])
+        self.assertIn("```bash", result["answer"])
+        self.assertIn("echo 'ready'", result["answer"])
+        self.assertIn("api_key= [redacted sensitive data]", result["answer"])
+        self.assertNotIn("super-secret", result["answer"])
+        self.assertIn("Remember to run `npm install`.", result["answer"])
+        self.assertIn("[redacted sensitive data]", result["answer"])
+        self.assertNotIn("sk-1234567890abcdefghijkl", result["answer"])
         self.assertIn("Sources: [github:app/main.py]", result["answer"])
-        self.assertIn("[omitted code block]", result["answer"])
         self.assertEqual(
             result["sources"],
             [

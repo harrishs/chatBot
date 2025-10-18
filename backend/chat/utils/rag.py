@@ -11,12 +11,23 @@ from chat.models import JiraIssue
 
 
 _SECRET_KEY_VALUE_PATTERN = re.compile(
-    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])\s*(?P<value>[^\s'\"]+)"
+    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])(?P<ws>\s*)(?P<quote>['\"])?"
+    r"(?P<value>[^\n'\"]+)(?P=quote)?"
 )
 _OPENAI_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,}")
 _PEM_BLOCK_PATTERN = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+_CODE_BLOCK_PATTERN = re.compile(
+    r"```(?P<lang>[^\n`]*)((?P<newline>\n)?)(?P<content>.*?)```",
+    re.DOTALL,
+)
 
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
+
+
+def _redacted_secret_value(match: re.Match) -> str:
+    quote = match.group("quote") or ""
+    ws = match.group("ws") or " "
+    return f"{match.group('key')}{match.group('sep')}{ws}{quote}[redacted sensitive data]{quote}"
 
 
 def _truncate_text(value: str, max_length: int) -> str:
@@ -168,10 +179,7 @@ def _redact_sensitive_snippet(value: str) -> str:
         return ""
 
     sanitized = value
-    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(
-        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
-        sanitized,
-    )
+    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(_redacted_secret_value, sanitized)
     sanitized = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", sanitized)
     sanitized = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", sanitized)
 
@@ -332,18 +340,45 @@ def _collect_citations(metadata_list: List[Dict]) -> List[str]:
     return citations
 
 
+def _redact_sensitive_tokens(value: str) -> str:
+    """Redact known sensitive token patterns within ``value``."""
+
+    value = _SECRET_KEY_VALUE_PATTERN.sub(_redacted_secret_value, value)
+    value = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", value)
+    value = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", value)
+    return value
+
+
 def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
     """Remove unsafe snippets while preserving legitimate technical explanations."""
 
     sanitized = answer or ""
-    sanitized = re.sub(r"```.*?```", "[omitted code block]", sanitized, flags=re.DOTALL)
 
-    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(
-        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
-        sanitized,
-    )
-    sanitized = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", sanitized)
-    sanitized = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", sanitized)
+    def _sanitize_code_block(match: re.Match) -> str:
+        language = match.group("lang") or ""
+        newline = match.group("newline") or ""
+        content = match.group("content") or ""
+        cleaned_content = _redact_sensitive_tokens(content)
+        return f"```{language}{newline}{cleaned_content}```"
+
+    parts: List[str] = []
+    last_end = 0
+    has_blocks = False
+    for block in _CODE_BLOCK_PATTERN.finditer(sanitized):
+        has_blocks = True
+        prefix = sanitized[last_end : block.start()]
+        if prefix:
+            parts.append(_redact_sensitive_tokens(prefix))
+        parts.append(_sanitize_code_block(block))
+        last_end = block.end()
+
+    remainder = sanitized[last_end:]
+    if has_blocks:
+        if remainder:
+            parts.append(_redact_sensitive_tokens(remainder))
+        sanitized = "".join(parts)
+    else:
+        sanitized = _redact_sensitive_tokens(sanitized)
 
     citations = _collect_citations(metadata_list)
     if citations and not any(token in sanitized for token in citations):
