@@ -1,6 +1,7 @@
 import re
 from collections import Counter
-from typing import Dict, List, Optional
+from types import SimpleNamespace
+from typing import Dict, List, Optional, Sequence
 
 from django.utils import timezone
 
@@ -22,6 +23,24 @@ _CODE_BLOCK_PATTERN = re.compile(
 )
 
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
+_LOW_CONFIDENCE_THRESHOLD = 0.45
+_LOW_CONFIDENCE_DRAFT_COUNT = 3
+_UNCERTAINTY_PHRASES = {
+    "i don't know",
+    "i do not know",
+    "cannot find",
+    "can't find",
+    "not sure",
+    "no information",
+    "i'm not sure",
+}
+_REFUSAL_PHRASES = {
+    "i cannot help with",
+    "i can't help with",
+    "i cannot assist",
+    "i can't assist",
+}
+_CITATION_TOKEN_PATTERN = re.compile(r"\[[A-Za-z0-9_.:-]+:[^\[\]]+\]")
 
 
 def _redacted_secret_value(match: re.Match) -> str:
@@ -236,6 +255,17 @@ def _metadata_from_document(document: Dict) -> Dict:
         if document.get(key) is not None
     }
 
+    for score_key in (
+        "combined_score",
+        "lexical_score",
+        "websearch_score",
+        "trigram_score",
+        "rerank_score",
+    ):
+        value = document.get(score_key)
+        if isinstance(value, (int, float)):
+            metadata[score_key] = float(value)
+
     source_url = stored_metadata.get("source_url") or document.get("source_url")
     if source_url:
         metadata["source_url"] = source_url
@@ -338,6 +368,82 @@ def _collect_citations(metadata_list: List[Dict]) -> List[str]:
         if token not in citations:
             citations.append(token)
     return citations
+
+
+def _extract_answer_citations(answer: str) -> List[str]:
+    """Return all citation tokens that appear in ``answer``."""
+
+    if not answer:
+        return []
+
+    return _CITATION_TOKEN_PATTERN.findall(answer)
+
+
+def _compute_retrieval_confidence(documents: Sequence[dict]) -> float:
+    """Estimate a retrieval confidence score from ranked documents."""
+
+    if not documents:
+        return 0.0
+
+    scores: List[float] = []
+    for document in documents:
+        for key in ("combined_score", "similarity", "rerank_score"):
+            value = document.get(key)
+            if isinstance(value, (int, float)):
+                scores.append(float(value))
+
+    if not scores:
+        return 0.0
+
+    top_scores = sorted(scores, reverse=True)[:2]
+    blended = top_scores[0]
+    if len(top_scores) > 1:
+        blended = (0.7 * top_scores[0]) + (0.3 * top_scores[1])
+
+    return max(0.0, min(1.0, float(blended)))
+
+
+def _evaluate_answer_draft(
+    answer: str,
+    metadata_list: List[Dict],
+    retrieval_confidence: float,
+) -> Dict:
+    """Score an answer draft based on citation quality and uncertainty signals."""
+
+    found_citations = _extract_answer_citations(answer)
+    valid_tokens = set(_collect_citations(metadata_list))
+    valid_citations = [token for token in found_citations if token in valid_tokens]
+    invalid_citations = [token for token in found_citations if token not in valid_tokens]
+
+    normalized_answer = (answer or "").lower()
+    contains_uncertainty = any(phrase in normalized_answer for phrase in _UNCERTAINTY_PHRASES)
+    contains_refusal = any(phrase in normalized_answer for phrase in _REFUSAL_PHRASES)
+
+    coverage_target = max(1, min(len(valid_tokens), 3)) if valid_tokens else 0
+    unique_valid = len({token for token in valid_citations})
+    coverage_ratio = (unique_valid / coverage_target) if coverage_target else 0.0
+
+    score = retrieval_confidence
+    if valid_citations:
+        score += 0.6 + (0.4 * min(1.0, coverage_ratio))
+    else:
+        score -= 0.7
+
+    if invalid_citations:
+        score -= 0.4 * len(invalid_citations)
+
+    if contains_uncertainty or contains_refusal:
+        score -= 0.8
+
+    return {
+        "score": float(score),
+        "valid_citations": valid_citations,
+        "invalid_citations": invalid_citations,
+        "found_citations": found_citations,
+        "coverage": coverage_ratio,
+        "contains_uncertainty": contains_uncertainty,
+        "contains_refusal": contains_refusal,
+    }
 
 
 def _redact_sensitive_tokens(value: str) -> str:
@@ -485,6 +591,22 @@ def generate_answer(
     # 1. Retrieve context
     documents = search_documents(company_id, chatbot_id, query, top_k)
     documents = rerank_documents(query, documents)
+    retrieval_confidence = _compute_retrieval_confidence(documents)
+    threshold = getattr(settings, "RAG_LOW_CONFIDENCE_THRESHOLD", _LOW_CONFIDENCE_THRESHOLD)
+    requested_drafts = 1
+    if retrieval_confidence < threshold:
+        requested_drafts = getattr(
+            settings,
+            "RAG_LOW_CONFIDENCE_DRAFT_COUNT",
+            _LOW_CONFIDENCE_DRAFT_COUNT,
+        )
+        try:
+            requested_drafts = int(requested_drafts)
+        except (TypeError, ValueError):
+            requested_drafts = _LOW_CONFIDENCE_DRAFT_COUNT
+        if requested_drafts < 2:
+            requested_drafts = 2
+    low_confidence_mode = requested_drafts > 1
     metadata_entries = [_metadata_from_document(doc) for doc in documents]
 
     # 2. Build context string that only contains safe metadata
@@ -519,24 +641,82 @@ def generate_answer(
 
     client = get_openai_client()
 
+    completion_kwargs = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1 if low_confidence_mode else 0.2,
+    }
+    if requested_drafts > 1:
+        completion_kwargs["n"] = requested_drafts
+
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
+        response = client.chat.completions.create(**completion_kwargs)
     except RateLimitError as exc:
         raise RuntimeError("OpenAI rate limit exceeded while generating an answer") from exc
     except (APIConnectionError, APITimeoutError) as exc:
         raise RuntimeError("Failed to reach OpenAI while generating an answer") from exc
 
-    raw_answer = response.choices[0].message.content or ""
-    safe_answer = _sanitize_answer(raw_answer, metadata_entries)
+    choices = list(getattr(response, "choices", []) or [])
+    if not choices:
+        choices = [SimpleNamespace(message=SimpleNamespace(content=""))]
 
-    return {"answer": safe_answer, "sources": metadata_entries}
+    drafts: List[Dict] = []
+    for idx, choice in enumerate(choices):
+        message = getattr(choice, "message", None)
+        raw_text = getattr(message, "content", "") if message else ""
+        evaluation = _evaluate_answer_draft(
+            raw_text,
+            metadata_entries,
+            retrieval_confidence,
+        )
+        sanitized_text = _sanitize_answer(raw_text, metadata_entries)
+        drafts.append(
+            {
+                "index": idx,
+                "answer": sanitized_text,
+                "score": evaluation["score"],
+                "citations": evaluation["valid_citations"],
+                "invalid_citations": evaluation["invalid_citations"],
+                "found_citations": evaluation["found_citations"],
+                "coverage": evaluation["coverage"],
+                "contains_uncertainty": evaluation["contains_uncertainty"],
+                "contains_refusal": evaluation["contains_refusal"],
+            }
+        )
+
+    best_index, best_draft = max(
+        enumerate(drafts), key=lambda item: item[1]["score"]
+    )
+
+    citation_bonus = 0.1 * min(len(set(best_draft["citations"])), 3)
+    uncertainty_penalty = 0.2 if (
+        best_draft["contains_uncertainty"] or best_draft["contains_refusal"]
+    ) else 0.0
+    final_confidence = max(
+        0.0,
+        min(1.0, retrieval_confidence + citation_bonus - uncertainty_penalty),
+    )
+
+    reasoning_trace = {
+        "retrieval_confidence": retrieval_confidence,
+        "low_confidence_mode": low_confidence_mode,
+        "requested_drafts": requested_drafts,
+        "selected_draft_index": best_index,
+        "draft_scores": [draft["score"] for draft in drafts],
+        "evaluation_method": "heuristic_citation_scoring",
+    }
+
+    return {
+        "answer": best_draft["answer"],
+        "sources": metadata_entries,
+        "confidence": final_confidence,
+        "retrieval_confidence": retrieval_confidence,
+        "drafts": drafts,
+        "reasoning_trace": reasoning_trace,
+    }
 _MAX_HISTORY_TURNS = 6
 _MAX_HISTORY_CHARACTERS = 1600
 
