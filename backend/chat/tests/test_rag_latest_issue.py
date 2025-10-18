@@ -46,7 +46,7 @@ class LatestResolvedIssueTests(TestCase):
 
         with patch("chat.utils.rag.get_openai_client") as mock_client, patch(
             "chat.utils.rag.search_documents"
-        ) as mock_search:
+        ) as mock_search, patch("chat.utils.rag.rerank_documents") as mock_rerank:
             result = rag.generate_answer(
                 company_id=self.company.id,
                 chatbot_id=self.chatbot.id,
@@ -55,6 +55,7 @@ class LatestResolvedIssueTests(TestCase):
 
         mock_client.assert_not_called()
         mock_search.assert_not_called()
+        mock_rerank.assert_not_called()
 
         self.assertIn(latest_issue.issue_key, result["answer"])
         self.assertIn(latest_issue.status, result["answer"])

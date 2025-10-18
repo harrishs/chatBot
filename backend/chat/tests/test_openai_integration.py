@@ -84,7 +84,9 @@ class GenerateAnswerTests(SimpleTestCase):
 
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents", return_value=documents
-        ) as mock_search_documents:
+        ) as mock_search_documents, patch(
+            "chat.utils.rag.rerank_documents", return_value=documents
+        ) as mock_rerank_documents:
             result = rag.generate_answer(company_id=1, chatbot_id=2, query="question")
 
         self.assertEqual(
@@ -108,6 +110,7 @@ class GenerateAnswerTests(SimpleTestCase):
         )
         mock_client.chat.completions.create.assert_called_once()
         mock_search_documents.assert_called_once_with(1, 2, "question", 5)
+        mock_rerank_documents.assert_called_once_with("question", documents)
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(item["content"] for item in messages if item["role"] == "user")
@@ -125,7 +128,7 @@ class GenerateAnswerTests(SimpleTestCase):
 
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents", return_value=[]
-        ):
+        ), patch("chat.utils.rag.rerank_documents", return_value=[]):
             with self.assertRaises(RuntimeError):
                 rag.generate_answer(company_id=1, chatbot_id=2, query="question")
 
@@ -152,7 +155,7 @@ class GenerateAnswerTests(SimpleTestCase):
 
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents", return_value=documents
-        ):
+        ), patch("chat.utils.rag.rerank_documents", return_value=documents):
             result = rag.generate_answer(company_id=1, chatbot_id=2, query="Show me the code")
 
         self.assertNotIn("```", result["answer"])
@@ -197,7 +200,7 @@ class GenerateAnswerTests(SimpleTestCase):
 
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents", return_value=documents
-        ):
+        ), patch("chat.utils.rag.rerank_documents", return_value=documents):
             result = rag.generate_answer(
                 company_id=1, chatbot_id=2, query="How do I sync configs?"
             )
@@ -215,6 +218,6 @@ class GenerateAnswerTests(SimpleTestCase):
 
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents", return_value=[]
-        ):
+        ), patch("chat.utils.rag.rerank_documents", return_value=[]):
             with self.assertRaises(RuntimeError):
                 rag.generate_answer(company_id=1, chatbot_id=2, query="question")

@@ -591,16 +591,19 @@ class ChatbotAccessAPITests(APITestCase):
         self.assertIn("history", response.data)
         self.assertIn("does not match chatbot", response.data["history"][0])
 
+    @patch("chat.utils.rag.rerank_documents")
     @patch("chat.utils.rag.get_openai_client")
     @patch("chat.utils.rag.search_documents")
     def test_chat_with_bot_expands_top_k_for_enumeration_queries(
         self,
         mock_search_documents,
         mock_get_openai_client,
+        mock_rerank_documents,
     ):
         mock_search_documents.return_value = [
             {"id": 1, "source": "test", "source_id": "DOC-1", "content": ""}
         ]
+        mock_rerank_documents.return_value = mock_search_documents.return_value
 
         mock_client = MagicMock()
         mock_message = MagicMock()
@@ -624,16 +627,19 @@ class ChatbotAccessAPITests(APITestCase):
         called_args = mock_search_documents.call_args[0]
         self.assertEqual(called_args[3], ENUMERATION_TOP_K)
 
+    @patch("chat.utils.rag.rerank_documents")
     @patch("chat.utils.rag.get_openai_client")
     @patch("chat.utils.rag.search_documents")
     def test_chat_with_bot_uses_default_top_k_for_standard_queries(
         self,
         mock_search_documents,
         mock_get_openai_client,
+        mock_rerank_documents,
     ):
         mock_search_documents.return_value = [
             {"id": 1, "source": "test", "source_id": "DOC-1", "content": ""}
         ]
+        mock_rerank_documents.return_value = mock_search_documents.return_value
 
         mock_client = MagicMock()
         mock_message = MagicMock()
@@ -914,12 +920,14 @@ class SyncCredentialValidationTests(APITestCase):
 
 class ChatHistoryPromptLimitsTests(TestCase):
     @override_settings(OPENAI_API_KEY="test-key")
+    @patch("chat.utils.rag.rerank_documents", return_value=[])
     @patch("chat.utils.rag.search_documents", return_value=[])
     @patch("chat.utils.rag.get_openai_client")
     def test_generate_answer_truncates_history_before_prompt(
         self,
         mock_get_openai_client,
         mock_search_documents,
+        mock_rerank_documents,
     ):
         mock_client = MagicMock()
         mock_message = MagicMock()
