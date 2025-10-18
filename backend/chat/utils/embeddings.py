@@ -6,10 +6,18 @@ from math import sqrt
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from django.conf import settings
-from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+from django.contrib.postgres.search import (
+    SearchQuery,
+    SearchRank,
+    SearchVector,
+    TrigramSimilarity,
+)
 from django.db import connection
-from django.db.models import ExpressionWrapper, F, FloatField, Value
+from django.db.models import Case, ExpressionWrapper, F, FloatField, Value, When
+from django.db.models import Max
+from django.db.models import Window
 from django.db.models.functions import Coalesce
+from django.db.models.functions import NullIf
 from django.utils import timezone
 from openai import (
     APIConnectionError,
@@ -125,6 +133,31 @@ def _tokenize_query(text: str) -> List[str]:
     """Tokenize the query for simple lexical scoring."""
 
     return [token for token in (text or "").lower().split() if token]
+
+
+def _trigram_similarity(query: str, text: str) -> float:
+    """Approximate trigram similarity for SQLite fallbacks."""
+
+    if not query or not text:
+        return 0.0
+
+    def _trigrams(value: str) -> List[str]:
+        normalized = f"  {value.lower()} "
+        return [normalized[i : i + 3] for i in range(len(normalized) - 2)]
+
+    query_trigrams = _trigrams(query)
+    text_trigrams = _trigrams(text)
+
+    if not query_trigrams or not text_trigrams:
+        return 0.0
+
+    query_set = set(query_trigrams)
+    text_set = set(text_trigrams)
+    intersection = query_set.intersection(text_set)
+    if not intersection:
+        return 0.0
+
+    return (2.0 * len(intersection)) / (len(query_set) + len(text_set))
 
 def _normalize_metadata(metadata: Optional[Mapping[str, object]]) -> Dict[str, object]:
     if not metadata:
@@ -403,14 +436,18 @@ def search_documents(
         top_k = 1
 
     vector_weight = getattr(settings, "RAG_VECTOR_WEIGHT", 0.7)
-    lexical_weight = getattr(settings, "RAG_LEXICAL_WEIGHT", 0.3)
-    total_weight = vector_weight + lexical_weight
+    websearch_weight = getattr(settings, "RAG_WEBSEARCH_WEIGHT", 0.2)
+    trigram_weight = getattr(settings, "RAG_TRIGRAM_WEIGHT", 0.1)
+    trigram_floor = getattr(settings, "RAG_TRIGRAM_FLOOR", 0.1)
+    total_weight = vector_weight + websearch_weight + trigram_weight
     if total_weight <= 0:
         vector_weight = 1.0
-        lexical_weight = 0.0
+        websearch_weight = 0.0
+        trigram_weight = 0.0
     else:
         vector_weight /= total_weight
-        lexical_weight /= total_weight
+        websearch_weight /= total_weight
+        trigram_weight /= total_weight
 
     base_queryset = Document.objects.filter(company_id=company_id, chatbot_id=chatbot_id)
     if sources:
@@ -418,26 +455,44 @@ def search_documents(
 
     if connection.vendor == 'sqlite':
         scored_docs = []
+        query_phrase = " ".join(query_tokens)
         for doc in base_queryset:
             similarity = _cosine_similarity(doc.embedding, query_embedding)
-            lexical_raw = 0.0
+            websearch_raw = 0.0
+            trigram_raw = 0.0
             if query_tokens:
                 lowered = (doc.content or "").lower()
-                lexical_raw = sum(lowered.count(token) for token in query_tokens)
+                if query_phrase and query_phrase in lowered:
+                    occurrences = lowered.count(query_phrase)
+                    websearch_raw = float(occurrences * len(query_phrase))
+                else:
+                    websearch_raw = float(
+                        sum(lowered.count(token) for token in query_tokens)
+                    )
+                trigram_raw = _trigram_similarity(query_phrase or query, lowered)
+                if trigram_raw < trigram_floor:
+                    trigram_raw = 0.0
 
-            scored_docs.append((doc, similarity, lexical_raw))
+            scored_docs.append((doc, similarity, websearch_raw, trigram_raw))
 
-        max_lexical = max((item[2] for item in scored_docs), default=0.0)
+        max_websearch = max((item[2] for item in scored_docs), default=0.0)
+        max_trigram = max((item[3] for item in scored_docs), default=0.0)
 
         enriched = []
-        for doc, similarity, lexical_raw in scored_docs:
-            lexical_score = (lexical_raw / max_lexical) if max_lexical > 0 else 0.0
-            combined_score = (vector_weight * similarity) + (lexical_weight * lexical_score)
+        for doc, similarity, websearch_raw, trigram_raw in scored_docs:
+            websearch_score = (websearch_raw / max_websearch) if max_websearch > 0 else 0.0
+            trigram_score = (trigram_raw / max_trigram) if max_trigram > 0 else 0.0
+            lexical_score = (websearch_weight * websearch_score) + (
+                trigram_weight * trigram_score
+            )
+            combined_score = (vector_weight * similarity) + lexical_score
             enriched.append(
                 {
                     "doc": doc,
                     "similarity": similarity,
                     "lexical_score": lexical_score,
+                    "websearch_score": websearch_score,
+                    "trigram_score": trigram_score,
                     "combined_score": combined_score,
                 }
             )
@@ -466,6 +521,8 @@ def search_documents(
                 "metadata": item["doc"].metadata,
                 "similarity": float(item["similarity"]),
                 "lexical_score": float(item["lexical_score"]),
+                "websearch_score": float(item["websearch_score"]),
+                "trigram_score": float(item["trigram_score"]),
                 "combined_score": float(item["combined_score"]),
             }
             for item in rows
@@ -482,18 +539,63 @@ def search_documents(
 
     if query_tokens:
         search_vector = SearchVector("content", config="english")
-        search_query = SearchQuery(query, config="english")
+        search_query = SearchQuery(query, search_type="websearch", config="english")
         queryset = queryset.annotate(
-            lexical_rank=SearchRank(search_vector, search_query)
+            websearch_rank=Coalesce(SearchRank(search_vector, search_query), Value(0.0)),
+            trigram_raw_value=Coalesce(TrigramSimilarity("content", query), Value(0.0)),
+        ).annotate(
+            trigram_raw=Case(
+                When(
+                    trigram_raw_value__gte=Value(trigram_floor),
+                    then=F("trigram_raw_value"),
+                ),
+                default=Value(0.0),
+                output_field=FloatField(),
+            )
         )
     else:
         queryset = queryset.annotate(
-            lexical_rank=Value(0.0, output_field=FloatField())
+            websearch_rank=Value(0.0, output_field=FloatField()),
+            trigram_raw_value=Value(0.0, output_field=FloatField()),
+            trigram_raw=Value(0.0, output_field=FloatField()),
         )
 
     queryset = queryset.annotate(
+        websearch_max=Window(expression=Max("websearch_rank")),
+        trigram_max=Window(expression=Max("trigram_raw")),
+    )
+
+    queryset = queryset.annotate(
+        websearch_score=ExpressionWrapper(
+            Case(
+                When(
+                    websearch_max__gt=Value(0.0),
+                    then=F("websearch_rank")
+                    / NullIf(F("websearch_max"), Value(0.0)),
+                ),
+                default=Value(0.0),
+                output_field=FloatField(),
+            ),
+            output_field=FloatField(),
+        ),
+        trigram_score=ExpressionWrapper(
+            Case(
+                When(
+                    trigram_max__gt=Value(0.0),
+                    then=F("trigram_raw")
+                    / NullIf(F("trigram_max"), Value(0.0)),
+                ),
+                default=Value(0.0),
+                output_field=FloatField(),
+            ),
+            output_field=FloatField(),
+        ),
+    )
+
+    queryset = queryset.annotate(
         lexical_score=ExpressionWrapper(
-            Coalesce(F("lexical_rank"), Value(0.0)),
+            Value(websearch_weight) * F("websearch_score")
+            + Value(trigram_weight) * F("trigram_score"),
             output_field=FloatField(),
         )
     )
@@ -501,7 +603,7 @@ def search_documents(
     queryset = queryset.annotate(
         combined_score=ExpressionWrapper(
             Value(vector_weight) * Coalesce(F("similarity"), Value(0.0))
-            + Value(lexical_weight) * F("lexical_score"),
+            + F("lexical_score"),
             output_field=FloatField(),
         )
     )
@@ -526,8 +628,10 @@ def search_documents(
             else None,
             "content": doc.content,
             "metadata": doc.metadata,
-            "similarity": float(doc.similarity) if doc.similarity is not None else None,
+            "similarity": float(doc.similarity) if doc.similarity is not None else 0.0,
             "lexical_score": float(doc.lexical_score) if doc.lexical_score is not None else 0.0,
+            "websearch_score": float(doc.websearch_score) if doc.websearch_score is not None else 0.0,
+            "trigram_score": float(doc.trigram_score) if doc.trigram_score is not None else 0.0,
             "combined_score": float(doc.combined_score) if doc.combined_score is not None else 0.0,
         }
         for doc in rows

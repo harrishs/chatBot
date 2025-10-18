@@ -79,6 +79,70 @@ class SearchDocumentsRankingTests(TestCase):
         self.assertGreater(results[0]["combined_score"], results[1]["combined_score"])
         self.assertGreaterEqual(results[1]["combined_score"], results[2]["combined_score"])
 
+    @override_settings(
+        RAG_VECTOR_WEIGHT=0.2,
+        RAG_WEBSEARCH_WEIGHT=0.6,
+        RAG_TRIGRAM_WEIGHT=0.2,
+    )
+    @patch("chat.utils.embeddings.embed_text")
+    def test_phrase_search_boosts_phrase_matches(self, mock_embed_text):
+        mock_embed_text.return_value = self.primary_embedding
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="release plan",
+            top_k=3,
+        )
+
+        self.assertEqual(results[0]["source_id"], "CONF-1")
+        self.assertGreater(results[0]["websearch_score"], results[1]["websearch_score"])
+        self.assertGreater(results[0]["combined_score"], results[1]["combined_score"])
+
+    @override_settings(
+        RAG_VECTOR_WEIGHT=0.1,
+        RAG_WEBSEARCH_WEIGHT=0.3,
+        RAG_TRIGRAM_WEIGHT=0.6,
+    )
+    @patch("chat.utils.embeddings.embed_text")
+    def test_partial_token_queries_use_trigram_similarity(self, mock_embed_text):
+        mock_embed_text.return_value = self.primary_embedding
+
+        fuzzy_doc = Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="confluence",
+            source_id="CONF-2",
+            content="Project schedul updates and timeline",
+            embedding=self.primary_embedding,
+        )
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="schedul",
+            top_k=3,
+        )
+
+        self.assertEqual(results[0]["source_id"], fuzzy_doc.source_id)
+        self.assertGreater(results[0]["trigram_score"], results[1]["trigram_score"])
+        self.assertGreater(results[0]["combined_score"], results[1]["combined_score"])
+
+    @patch("chat.utils.embeddings.embed_text")
+    def test_unmatched_query_has_zero_lexical_scores(self, mock_embed_text):
+        mock_embed_text.return_value = self.primary_embedding
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="nonexistent phrase",
+            top_k=2,
+        )
+
+        for result in results:
+            self.assertEqual(result["websearch_score"], 0.0)
+            self.assertLess(result["trigram_score"], 0.05)
+
     @patch("chat.utils.embeddings.embed_text")
     def test_search_documents_respects_source_filter(self, mock_embed_text):
         mock_embed_text.return_value = self.primary_embedding
