@@ -1,4 +1,5 @@
 import os
+from typing import Dict, List, Tuple
 from unittest.mock import patch
 
 import django
@@ -96,9 +97,17 @@ class SearchDocumentsRankingTests(TestCase):
 
 
 class RerankDocumentsTests(TestCase):
-    @override_settings(OPENAI_RERANK_EMBEDDING_MODEL="text-embedding-3-large")
+    @override_settings(
+        OPENAI_RERANK_MODEL="gpt-4o-mini",
+        RAG_RERANK_TOP_N=3,
+    )
     @patch("chat.utils.embeddings.embed_text")
-    def test_rerank_documents_prioritizes_high_fidelity_similarity(self, mock_embed_text):
+    @patch("chat.utils.embeddings._call_cross_encoder_reranker")
+    def test_rerank_documents_uses_cross_encoder_scores(
+        self,
+        mock_reranker,
+        mock_embed_text,
+    ):
         query = "release schedule"
 
         documents = [
@@ -107,27 +116,120 @@ class RerankDocumentsTests(TestCase):
             {"id": 3, "source_id": "JIRA-9", "content": "schedule blockers"},
         ]
 
-        vector_map = {
-            (query, "text-embedding-3-large"): [1.0, 0.0],
-            ("release schedule overview", "text-embedding-3-large"): [1.0, 0.1],
-            ("implementation notes", "text-embedding-3-large"): [0.2, 1.0],
-            ("schedule blockers", "text-embedding-3-large"): [0.8, 0.6],
-        }
-
-        def side_effect(text, *, model=None):
-            key = (text, model or "text-embedding-3-small")
-            if key in vector_map:
-                return vector_map[key]
-            return [1.0] + [0.0] * 1535
-
-        mock_embed_text.side_effect = side_effect
+        mock_reranker.return_value = {"2": 0.91, "1": 0.75}
+        mock_embed_text.side_effect = AssertionError("embed_text should not be called when reranker succeeds")
 
         reranked = rerank_documents(query, documents)
 
         ordered_ids = [doc["source_id"] for doc in reranked]
-        self.assertEqual(ordered_ids, ["CONF-1", "JIRA-9", "GH-1"])
-        self.assertIsNotNone(reranked[0]["rerank_score"])
-        self.assertGreater(reranked[0]["rerank_score"], reranked[1]["rerank_score"])
+        self.assertEqual(ordered_ids, ["GH-1", "CONF-1", "JIRA-9"])
+        self.assertAlmostEqual(reranked[0]["rerank_score"], 0.91)
+        self.assertAlmostEqual(reranked[1]["rerank_score"], 0.75)
+        mock_reranker.assert_called_once()
+
+    @override_settings(
+        OPENAI_RERANK_MODEL="gpt-4o-mini",
+        OPENAI_RERANK_EMBEDDING_MODEL="",
+    )
+    @patch("chat.utils.embeddings._call_cross_encoder_reranker", side_effect=RuntimeError("boom"))
+    def test_rerank_documents_falls_back_to_original_order_when_reranker_unavailable(
+        self,
+        mock_reranker,
+    ):
+        documents = [
+            {"id": 1, "source_id": "CONF-1", "content": "release schedule overview"},
+            {"id": 2, "source_id": "GH-1", "content": "implementation notes"},
+        ]
+
+        reranked = rerank_documents("release schedule", documents)
+
+        self.assertEqual([doc["source_id"] for doc in reranked], ["CONF-1", "GH-1"])
+        self.assertTrue(all(doc["rerank_score"] is None for doc in reranked))
+
+    @override_settings(
+        OPENAI_RERANK_MODEL="",
+        OPENAI_RERANK_EMBEDDING_MODEL="text-embedding-3-large",
+        RAG_RERANK_TOP_N=5,
+    )
+    @patch("chat.utils.embeddings.embed_text")
+    def test_rerank_documents_caches_high_fidelity_embeddings_and_invalidates(
+        self,
+        mock_embed_text,
+    ):
+        company = Company.objects.create(name="Rerank Co")
+        chatbot = ChatBotInstance.objects.create(company=company, name="Cache Bot")
+
+        vectors: Dict[Tuple[str, str], List[float]] = {}
+
+        def vector_for(key):
+            if key not in vectors:
+                index = len(vectors) % 1536
+                vec = [0.0] * 1536
+                vec[index] = 1.0
+                vectors[key] = vec
+            return vectors[key]
+
+        call_counts: Dict[Tuple[str, str], int] = {}
+
+        def fake_embed(text, *, model=None):
+            key = (text, model or "default")
+            call_counts[key] = call_counts.get(key, 0) + 1
+            if model == "text-embedding-3-large":
+                return list(vector_for(key))
+            return [1.0] + [0.0] * 1535
+
+        mock_embed_text.side_effect = fake_embed
+
+        docs = save_document(
+            company=company,
+            chatbot=chatbot,
+            source="confluence",
+            source_id="doc-1",
+            content="Release schedule overview",
+        )
+
+        self.assertEqual(len(docs), 1)
+        stored_doc = docs[0]
+
+        doc_payload = [
+            {
+                "id": stored_doc.id,
+                "source_id": stored_doc.source_id,
+                "content": stored_doc.content,
+            }
+        ]
+
+        first_rerank = rerank_documents("release schedule", doc_payload)
+        self.assertIsNotNone(first_rerank[0]["rerank_score"])
+
+        key = (stored_doc.content, "text-embedding-3-large")
+        self.assertEqual(call_counts[key], 1, "Document should be embedded once")
+
+        second_rerank = rerank_documents("release schedule", doc_payload)
+        self.assertIsNotNone(second_rerank[0]["rerank_score"])
+        self.assertEqual(call_counts[key], 1, "Cached embedding should be reused without new calls")
+
+        save_document(
+            company=company,
+            chatbot=chatbot,
+            source="confluence",
+            source_id="doc-1",
+            content="Updated release schedule overview",
+        )
+
+        updated_doc = Document.objects.get(id=stored_doc.id)
+        updated_payload = [
+            {
+                "id": updated_doc.id,
+                "source_id": updated_doc.source_id,
+                "content": updated_doc.content,
+            }
+        ]
+
+        rerank_documents("release schedule", updated_payload)
+
+        updated_key = (updated_doc.content, "text-embedding-3-large")
+        self.assertEqual(call_counts[updated_key], 1, "Embedding should be recomputed after invalidation")
 
 
 class DocumentChunkingMetadataTests(TestCase):
