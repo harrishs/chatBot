@@ -667,12 +667,12 @@ def generate_answer(
     for idx, choice in enumerate(choices):
         message = getattr(choice, "message", None)
         raw_text = getattr(message, "content", "") if message else ""
-        sanitized_text = _sanitize_answer(raw_text, metadata_entries)
         evaluation = _evaluate_answer_draft(
-            sanitized_text,
+            raw_text,
             metadata_entries,
             retrieval_confidence,
         )
+        sanitized_text = _sanitize_answer(raw_text, metadata_entries)
         drafts.append(
             {
                 "index": idx,
