@@ -2,9 +2,12 @@ import re
 from collections import Counter
 from typing import Dict, List
 
+from django.utils import timezone
+
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
 from chat.utils.embeddings import get_openai_client, search_documents
+from chat.models import JiraIssue
 
 
 def _truncate_text(value: str, max_length: int) -> str:
@@ -205,8 +208,88 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
     return sanitized.strip()
 
 
+_LATEST_RESOLVED_KEYWORDS = {
+    "last",
+    "latest",
+    "most recent",
+}
+
+
+def _is_latest_resolved_issue_query(query: str) -> bool:
+    """Return ``True`` when ``query`` asks for the latest resolved/closed ticket."""
+
+    if not query:
+        return False
+
+    normalized = query.lower()
+
+    if not any(keyword in normalized for keyword in _LATEST_RESOLVED_KEYWORDS):
+        return False
+
+    if not any(term in normalized for term in ("resolved", "closed")):
+        return False
+
+    if not any(term in normalized for term in ("ticket", "issue")):
+        return False
+
+    return True
+
+
+def answer_latest_resolved_issue(company_id: int, chatbot_id: int) -> dict:
+    """Return a concise answer describing the most recently resolved Jira issue."""
+
+    issue = (
+        JiraIssue.objects.filter(
+            sync__chatBot__company_id=company_id,
+            sync__chatBot_id=chatbot_id,
+            resolution_date__isnull=False,
+        )
+        .order_by("-resolution_date", "-updated_at")
+        .select_related("sync__chatBot")
+        .first()
+    )
+
+    if not issue:
+        return {
+            "answer": "I could not find any resolved Jira issues for this chatbot.",
+            "sources": [],
+        }
+
+    resolved_at = issue.resolution_date
+    if resolved_at is not None:
+        resolved_at = timezone.localtime(resolved_at) if timezone.is_aware(resolved_at) else resolved_at
+        resolved_display = resolved_at.strftime("%Y-%m-%d %H:%M")
+    else:
+        resolved_display = "an unknown date"
+
+    resolution_text = issue.resolution or "Unspecified"
+    metadata = {
+        "source": "jira",
+        "source_id": issue.issue_key,
+        "source_display": issue.issue_key,
+        "title": issue.summary,
+        "summary": issue.summary,
+        "status": issue.status,
+        "resolution": issue.resolution,
+        "resolution_date": issue.resolution_date.isoformat() if issue.resolution_date else None,
+    }
+
+    answer = (
+        f"The most recently resolved Jira issue is {issue.issue_key}. "
+        f"It is currently in status \"{issue.status}\" with resolution \"{resolution_text}\" "
+        f"recorded on {resolved_display}."
+    )
+
+    safe_answer = _sanitize_answer(answer, [metadata])
+
+    return {"answer": safe_answer, "sources": [metadata]}
+
+
 def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5) -> dict:
     """Generate an answer using RAG with metadata-only context and safeguarded output."""
+
+    if _is_latest_resolved_issue_query(query):
+        return answer_latest_resolved_issue(company_id, chatbot_id)
 
     if not settings.OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
