@@ -27,6 +27,14 @@ OPENAI_API_KEY = config('OPENAI_API_KEY', default=None)
 if not OPENAI_API_KEY:
     raise ImproperlyConfigured('OPENAI_API_KEY is required')
 
+OPENAI_EMBEDDING_MODEL = config('OPENAI_EMBEDDING_MODEL', default='text-embedding-3-small')
+OPENAI_RERANK_EMBEDDING_MODEL = config(
+    'OPENAI_RERANK_EMBEDDING_MODEL', default='text-embedding-3-large'
+)
+
+RAG_VECTOR_WEIGHT = config('RAG_VECTOR_WEIGHT', default=0.7, cast=float)
+RAG_LEXICAL_WEIGHT = config('RAG_LEXICAL_WEIGHT', default=0.3, cast=float)
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -76,6 +84,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
     'rest_framework',
     'chat',
     'corsheaders',

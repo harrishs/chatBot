@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
-from chat.utils.embeddings import get_openai_client, search_documents
+from chat.utils.embeddings import get_openai_client, rerank_documents, search_documents
 from chat.models import JiraIssue
 
 
@@ -373,6 +373,7 @@ def generate_answer(
 
     # 1. Retrieve context
     documents = search_documents(company_id, chatbot_id, query, top_k)
+    documents = rerank_documents(query, documents)
     metadata_entries = [_metadata_from_document(doc) for doc in documents]
 
     # 2. Build context string that only contains safe metadata
