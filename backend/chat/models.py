@@ -308,6 +308,7 @@ class Document(models.Model):
     content = models.TextField()
     metadata = models.JSONField(default=dict, blank=True)
     embedding = VectorField(dimensions=1536)
+    rerank_cache = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

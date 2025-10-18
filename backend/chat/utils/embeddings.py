@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -9,6 +10,7 @@ from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
 from django.db.models import ExpressionWrapper, F, FloatField, Value
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -253,6 +255,10 @@ def _segments_with_overlap(
         if not paragraph_token_count:
             continue
 
+        available_tokens = normalized_max_tokens - current_tokens
+        if current_parts and available_tokens < paragraph_token_count:
+            finalize_chunk()
+
         token_index = 0
         while token_index < paragraph_token_count:
             available_tokens = normalized_max_tokens - current_tokens
@@ -370,6 +376,7 @@ def save_document(
                 "content": embedding_input,
                 "embedding": embedding,
                 "metadata": chunk_metadata,
+                "rerank_cache": {},
             },
         )
         docs.append(doc)
@@ -527,57 +534,270 @@ def search_documents(
     ]
 
 
+def _extract_json_from_text(text: str) -> Optional[object]:
+    if not text:
+        return None
+
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    code_block_match = re.search(r"```json\s*(.*?)```", stripped, re.DOTALL)
+    if code_block_match:
+        json_candidate = code_block_match.group(1).strip()
+        try:
+            return json.loads(json_candidate)
+        except json.JSONDecodeError:
+            return None
+
+    return None
+
+
+def _call_cross_encoder_reranker(
+    model: str,
+    query: str,
+    candidates: Sequence[dict],
+) -> Dict[str, float]:
+    if not candidates:
+        return {}
+
+    client = get_openai_client()
+
+    formatted_candidates = []
+    for candidate in candidates:
+        candidate_id = str(candidate.get("doc_id"))
+        content = (candidate.get("content") or "").strip()
+        metadata = candidate.get("metadata") or {}
+        formatted_candidates.append(
+            {
+                "doc_id": candidate_id,
+                "content": content[:4000],
+                "metadata": metadata,
+            }
+        )
+
+    user_payload = json.dumps(
+        {
+            "query": query,
+            "documents": formatted_candidates,
+        },
+        ensure_ascii=False,
+    )
+
+    response = client.responses.create(
+        model=model,
+        input=[
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "You are a document reranker. Given a JSON payload containing a user query "
+                            "and candidate documents, you must assign each candidate a relevance score "
+                            "between 0 and 1. Respond strictly with JSON using the schema "
+                            "[{\"doc_id\": string, \"score\": number}] with scores in descending order."
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": user_payload,
+                    }
+                ],
+            },
+        ],
+        temperature=0,
+    )
+
+    output_text = getattr(response, "output_text", None)
+    if not output_text:
+        try:
+            parts: List[str] = []
+            for item in getattr(response, "output", []):
+                for piece in getattr(item, "content", []):
+                    if getattr(piece, "type", "") in {"output_text", "text"}:
+                        parts.append(getattr(piece, "text", ""))
+            output_text = "".join(parts)
+        except Exception:  # pragma: no cover - defensive
+            output_text = ""
+
+    parsed = _extract_json_from_text(output_text or "")
+    if not isinstance(parsed, list):
+        raise ValueError("Reranker did not return a JSON array of scores")
+
+    scores: Dict[str, float] = {}
+    for entry in parsed:
+        if not isinstance(entry, Mapping):
+            continue
+        doc_id = entry.get("doc_id")
+        score = entry.get("score")
+        try:
+            score_value = float(score)
+        except (TypeError, ValueError):
+            continue
+        if doc_id is not None:
+            scores[str(doc_id)] = score_value
+
+    return scores
+
+
+def _get_cached_rerank_embedding(
+    doc_id: Optional[int],
+    content: str,
+    model: str,
+) -> Optional[List[float]]:
+    if not doc_id or not content:
+        return None
+
+    try:
+        document = Document.objects.get(id=doc_id)
+    except Document.DoesNotExist:
+        return embed_text(content, model=model)
+
+    cache = dict(document.rerank_cache or {})
+    cache_key = f"embedding::{model}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, Mapping):
+        vector = cached.get("vector")
+        if isinstance(vector, list):
+            return vector
+
+    embedding_vector = embed_text(content, model=model)
+    cache[cache_key] = {
+        "vector": embedding_vector,
+        "updated_at": timezone.now().isoformat(),
+    }
+    Document.objects.filter(id=doc_id).update(rerank_cache=cache)
+
+    return embedding_vector
+
+
 def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
-    """Re-rank documents using a higher-fidelity embedding model when available."""
+    """Re-rank documents using a cross-encoder or cached high-fidelity embeddings."""
 
     if not documents:
         return []
 
-    rerank_model = getattr(settings, "OPENAI_RERANK_EMBEDDING_MODEL", "").strip()
-    if not rerank_model:
-        return list(documents)
+    candidates = list(documents)
 
+    rerank_model = getattr(settings, "OPENAI_RERANK_MODEL", "").strip()
+    fallback_model = getattr(settings, "OPENAI_RERANK_EMBEDDING_MODEL", "").strip()
+
+    top_n_setting = getattr(settings, "RAG_RERANK_TOP_N", 8)
     try:
-        query_embedding = embed_text(query, model=rerank_model)
-    except Exception:  # pragma: no cover - defensive fallback
-        logger.exception(
-            "Falling back to original document ordering after failing to embed query for reranking"
-        )
-        return list(documents)
+        top_n = int(top_n_setting)
+    except (TypeError, ValueError):
+        top_n = 8
+    if top_n < 1:
+        top_n = 1
+    top_n = min(top_n, len(candidates))
 
-    scored: List[Tuple[dict, Optional[float]]] = []
-    for doc in documents:
-        content = (doc.get("content") or "").strip()
-        if not content:
-            scored.append((doc, None))
-            continue
+    rerank_scores: Dict[str, float] = {}
+    alias_lookup: Dict[int, str] = {}
+    alias_to_doc_key: Dict[str, str] = {}
+
+    if rerank_model and top_n > 0:
+        payload: List[dict] = []
+        for idx, doc in enumerate(candidates[:top_n]):
+            doc_id = doc.get("id")
+            alias = str(doc_id) if doc_id is not None else f"idx-{idx}"
+            alias_lookup[id(doc)] = alias
+            alias_to_doc_key[alias] = str(doc_id) if doc_id is not None else alias
+            payload.append(
+                {
+                    "doc_id": alias,
+                    "content": doc.get("content") or "",
+                    "metadata": doc.get("metadata") or {},
+                }
+            )
 
         try:
-            doc_embedding = embed_text(content, model=rerank_model)
+            alias_scores = _call_cross_encoder_reranker(
+                rerank_model,
+                query,
+                payload,
+            )
+            rerank_scores = {
+                alias_to_doc_key.get(alias, alias): score
+                for alias, score in alias_scores.items()
+            }
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception(
-                "Failed to embed document %s for reranking; retaining original order",
-                doc.get("id"),
+                "Cross-encoder reranker '%s' failed; attempting embedding-based fallback",
+                rerank_model,
             )
-            scored.append((doc, None))
-            continue
+            rerank_scores = {}
 
-        score = _cosine_similarity(query_embedding, doc_embedding)
-        scored.append((doc, score))
+    if not rerank_scores and fallback_model and top_n > 0:
+        try:
+            query_embedding = embed_text(query, model=fallback_model)
+        except Exception:  # pragma: no cover - defensive fallback
+            logger.exception(
+                "Failed to embed query with high-fidelity model '%s'; retaining original ordering",
+                fallback_model,
+            )
+        else:
+            for doc in candidates[:top_n]:
+                doc_id = doc.get("id")
+                alias = alias_lookup.get(id(doc)) or (str(doc_id) if doc_id is not None else None)
+                content = (doc.get("content") or "").strip()
+                if not content or alias is None:
+                    continue
+                try:
+                    doc_embedding = _get_cached_rerank_embedding(doc_id, content, fallback_model)
+                except Exception:  # pragma: no cover - defensive fallback
+                    logger.exception(
+                        "Failed to embed document %s with high-fidelity model '%s'",
+                        doc_id,
+                        fallback_model,
+                    )
+                    continue
+                if doc_embedding is None:
+                    continue
+                rerank_scores[str(doc_id)] = _cosine_similarity(query_embedding, doc_embedding)
 
-    scored.sort(
-        key=lambda item: (
-            item[1] is None,
-            -(item[1] if item[1] is not None else 0.0),
-            item[0].get("id"),
-        )
-    )
+    if not rerank_scores:
+        reranked: List[dict] = []
+        for doc in candidates:
+            updated = dict(doc)
+            if "rerank_score" not in updated:
+                updated["rerank_score"] = None
+            reranked.append(updated)
+        return reranked
+
+    top_slice = candidates[:top_n]
+    scored_slice: List[Tuple[dict, float]] = []
+    unscored_slice: List[dict] = []
+    for doc in top_slice:
+        doc_id = doc.get("id")
+        key = str(doc_id) if doc_id is not None else alias_lookup.get(id(doc))
+        score = rerank_scores.get(key) if key is not None else None
+        if score is None:
+            unscored_slice.append(doc)
+        else:
+            scored_slice.append((doc, score))
+
+    scored_slice.sort(key=lambda item: (-item[1], item[0].get("id")))
+
+    reordered = [doc for doc, _ in scored_slice] + unscored_slice + candidates[top_n:]
 
     reranked: List[dict] = []
-    for doc, score in scored:
+    for doc in reordered:
         updated = dict(doc)
-        if score is not None:
-            updated["rerank_score"] = float(score)
+        doc_id = doc.get("id")
+        key = str(doc_id) if doc_id is not None else alias_lookup.get(id(doc))
+        if key is not None and key in rerank_scores:
+            updated["rerank_score"] = float(rerank_scores[key])
         else:
             updated["rerank_score"] = None
         reranked.append(updated)
