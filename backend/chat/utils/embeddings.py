@@ -409,10 +409,9 @@ def save_document(
         chunk_metadata["chunk_count"] = total_segments
 
         bounded_text = _bounded_chunk_text(segment_text)
-        if bounded_text:
-            chunk_metadata["chunk_text"] = bounded_text
-            chunk_metadata["chunk_char_count"] = len(segment_text)
-            chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
+        chunk_metadata["chunk_text"] = bounded_text
+        chunk_metadata["chunk_char_count"] = len(segment_text)
+        chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
 
         metadata_text = _format_metadata_for_embedding(chunk_metadata)
         embedding_input = segment_text.strip()
