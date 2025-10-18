@@ -11,7 +11,8 @@ from chat.models import JiraIssue
 
 
 _SECRET_KEY_VALUE_PATTERN = re.compile(
-    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])\s*(?P<value>[^\s'\"]+)"
+    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])(?P<ws>\s*)(?P<quote>['\"])?"
+    r"(?P<value>[^\n'\"]+)(?P=quote)?"
 )
 _OPENAI_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,}")
 _PEM_BLOCK_PATTERN = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
@@ -21,6 +22,12 @@ _CODE_BLOCK_PATTERN = re.compile(
 )
 
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
+
+
+def _redacted_secret_value(match: re.Match) -> str:
+    quote = match.group("quote") or ""
+    ws = match.group("ws") or " "
+    return f"{match.group('key')}{match.group('sep')}{ws}{quote}[redacted sensitive data]{quote}"
 
 
 def _truncate_text(value: str, max_length: int) -> str:
@@ -172,10 +179,7 @@ def _redact_sensitive_snippet(value: str) -> str:
         return ""
 
     sanitized = value
-    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(
-        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
-        sanitized,
-    )
+    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(_redacted_secret_value, sanitized)
     sanitized = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", sanitized)
     sanitized = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", sanitized)
 
@@ -339,10 +343,7 @@ def _collect_citations(metadata_list: List[Dict]) -> List[str]:
 def _redact_sensitive_tokens(value: str) -> str:
     """Redact known sensitive token patterns within ``value``."""
 
-    value = _SECRET_KEY_VALUE_PATTERN.sub(
-        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
-        value,
-    )
+    value = _SECRET_KEY_VALUE_PATTERN.sub(_redacted_secret_value, value)
     value = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", value)
     value = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", value)
     return value
