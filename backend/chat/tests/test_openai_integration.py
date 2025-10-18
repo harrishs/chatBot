@@ -203,6 +203,7 @@ class GenerateAnswerTests(SimpleTestCase):
                     "title": "main.py",
                     "summary": "def run(): print('hello world')",
                     "excerpt": "def run():\nprint('hello world')",
+                    "chunk_text": "def run():\n    print('hello world')",
                     "snippet": "def run():\n    print('hello world')",
                     "keywords": "def, run, print, hello, world",
                     "path": "app/main.py",

@@ -21,6 +21,7 @@ _CODE_BLOCK_PATTERN = re.compile(
     r"```(?P<lang>[^\n`]*)((?P<newline>\n)?)(?P<content>.*?)```",
     re.DOTALL,
 )
+_INLINE_CODE_PATTERN = re.compile(r"`(?P<inline>[^`\n]{1,120})`")
 
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
 _LOW_CONFIDENCE_THRESHOLD = 0.45
@@ -489,6 +490,29 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
 
     sanitized = answer or ""
 
+    def _sanitize_free_text(value: str) -> str:
+        """Redact free text while preserving inline code snippets."""
+
+        if not value:
+            return value
+
+        parts: List[str] = []
+        last_end = 0
+        for inline in _INLINE_CODE_PATTERN.finditer(value):
+            prefix = value[last_end : inline.start()]
+            if prefix:
+                parts.append(_redact_sensitive_tokens(prefix))
+            inline_content = inline.group("inline") or ""
+            cleaned_inline = _redact_sensitive_tokens(inline_content)
+            parts.append(f"`{cleaned_inline}`")
+            last_end = inline.end()
+
+        remainder = value[last_end:]
+        if remainder:
+            parts.append(_redact_sensitive_tokens(remainder))
+
+        return "".join(parts)
+
     def _sanitize_code_block(match: re.Match) -> str:
         language = match.group("lang") or ""
         newline = match.group("newline") or ""
@@ -503,17 +527,17 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
         has_blocks = True
         prefix = sanitized[last_end : block.start()]
         if prefix:
-            parts.append(_redact_sensitive_tokens(prefix))
+            parts.append(_sanitize_free_text(prefix))
         parts.append(_sanitize_code_block(block))
         last_end = block.end()
 
     remainder = sanitized[last_end:]
     if has_blocks:
         if remainder:
-            parts.append(_redact_sensitive_tokens(remainder))
+            parts.append(_sanitize_free_text(remainder))
         sanitized = "".join(parts)
     else:
-        sanitized = _redact_sensitive_tokens(sanitized)
+        sanitized = _sanitize_free_text(sanitized)
 
     citations = _collect_citations(metadata_list)
     if citations and not any(token in sanitized for token in citations):
