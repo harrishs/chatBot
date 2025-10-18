@@ -781,7 +781,15 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
         chatbot=chatbot,
         source="jira_issue",
         source_id=issue_id,
-        content=content
+        content=content,
+        metadata={
+            "issue_key": issue.issue_key,
+            "summary": summary,
+            "status": issue.status,
+            "status_category": issue.status_category,
+            "assignee": issue.assignee,
+            "resolution": issue.resolution,
+        },
     )
     documents.extend(issue_documents)
 
@@ -802,7 +810,13 @@ def ingest_jira_issue(company, chatbot, issue: JiraIssue, comments: Iterable[Jir
                 chatbot=chatbot,
                 source="jira_comment",
                 source_id=comment_id,
-                content=comment_content
+                content=comment_content,
+                metadata={
+                    "issue_key": issue.issue_key,
+                    "issue_summary": summary,
+                    "comment_author": comment.author,
+                    "comment_id": comment.remote_id or comment.id,
+                },
             )
             documents.extend(comment_documents)
 

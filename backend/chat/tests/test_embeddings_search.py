@@ -13,7 +13,7 @@ django.setup()
 from django.test import TestCase, override_settings  # noqa: E402
 
 from chat.models import ChatBotInstance, Company, Document  # noqa: E402
-from chat.utils.embeddings import rerank_documents, search_documents  # noqa: E402
+from chat.utils.embeddings import rerank_documents, save_document, search_documents  # noqa: E402
 
 
 class SearchDocumentsRankingTests(TestCase):
@@ -128,3 +128,95 @@ class RerankDocumentsTests(TestCase):
         self.assertEqual(ordered_ids, ["CONF-1", "JIRA-9", "GH-1"])
         self.assertIsNotNone(reranked[0]["rerank_score"])
         self.assertGreater(reranked[0]["rerank_score"], reranked[1]["rerank_score"])
+
+
+class DocumentChunkingMetadataTests(TestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="Metadata Co")
+        self.chatbot = ChatBotInstance.objects.create(company=self.company, name="Metadata Bot")
+
+    def _fake_embedding(self, text, *, model=None):
+        vector = [0.0] * 1536
+        lowered = (text or "").lower()
+        markers = {
+            "guide to setup": 0,
+            "docs/guide.md": 1,
+            "heading one": 2,
+            "second sentence": 3,
+        }
+        for token, index in markers.items():
+            if token in lowered:
+                vector[index] = 1.0
+        return vector
+
+    @patch("chat.utils.embeddings.embed_text")
+    def test_query_matches_structured_metadata(self, mock_embed_text):
+        mock_embed_text.side_effect = self._fake_embedding
+
+        content = "# Heading One\nThis guide explains setup steps in detail."
+        docs = save_document(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="confluence",
+            source_id="guide-1",
+            content=content,
+            metadata={"title": "Guide to Setup", "path": "docs/guide.md"},
+        )
+
+        self.assertEqual(len(docs), 1)
+        stored_doc = docs[0]
+        self.assertEqual(stored_doc.metadata.get("title"), "Guide to Setup")
+        self.assertEqual(stored_doc.metadata.get("path"), "docs/guide.md")
+        self.assertEqual(stored_doc.metadata.get("section_heading"), "Heading One")
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="Guide to Setup",
+            top_k=3,
+        )
+
+        self.assertTrue(results)
+        self.assertEqual(results[0]["source_id"], stored_doc.source_id)
+        self.assertEqual(results[0]["metadata"].get("title"), "Guide to Setup")
+
+    @patch("chat.utils.embeddings.embed_text")
+    def test_segments_include_overlap_for_context(self, mock_embed_text):
+        mock_embed_text.side_effect = self._fake_embedding
+
+        content = (
+            "# Heading One\n"
+            "First sentence introduces the topic.\n"
+            "Second sentence provides additional detail.\n\n"
+            "Third sentence transitions to examples.\n"
+            "Fourth sentence concludes the discussion."
+        )
+
+        docs = save_document(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="confluence",
+            source_id="guide-2",
+            content=content,
+            metadata={"title": "Guide to Setup", "path": "docs/guide.md"},
+            max_tokens=20,
+            overlap_tokens=6,
+        )
+
+        self.assertGreaterEqual(len(docs), 2)
+        for idx, doc in enumerate(docs):
+            self.assertEqual(doc.metadata.get("chunk_index"), idx)
+            self.assertEqual(doc.metadata.get("chunk_count"), len(docs))
+            self.assertEqual(doc.metadata.get("section_heading"), "Heading One")
+
+        def extract_body(text):
+            parts = text.split("\n\n", 1)
+            return parts[1] if len(parts) > 1 else parts[0]
+
+        bodies = [extract_body(doc.content) for doc in docs]
+
+        self.assertIn("Second sentence provides additional detail.", bodies[0])
+        self.assertTrue(
+            any("Second sentence provides additional detail." in body for body in bodies[1:]),
+            "Overlapping segment should retain context from prior chunk",
+        )
