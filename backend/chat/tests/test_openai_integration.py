@@ -90,6 +90,7 @@ class GenerateAnswerTests(SimpleTestCase):
                         "similarity": 0.91,
                         "title": "Issue title",
                         "summary": "Issue title A concise update about the fix.",
+                        "keywords": "issue, title, concise, update, fix.",
                     }
                 ],
             },
@@ -156,6 +157,7 @@ class GenerateAnswerTests(SimpleTestCase):
                     "similarity": 0.77,
                     "title": "main.py",
                     "summary": "main.py Implements the entry point.",
+                    "keywords": "main.py, implements, entry, point.",
                 }
             ],
         )

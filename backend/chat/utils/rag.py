@@ -1,6 +1,6 @@
 import re
 from collections import Counter
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from django.utils import timezone
 
@@ -285,7 +285,13 @@ def answer_latest_resolved_issue(company_id: int, chatbot_id: int) -> dict:
     return {"answer": safe_answer, "sources": [metadata]}
 
 
-def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5) -> dict:
+def generate_answer(
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    top_k: int = 5,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> dict:
     """Generate an answer using RAG with metadata-only context and safeguarded output."""
 
     if _is_latest_resolved_issue_query(query):
@@ -305,7 +311,12 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
     else:
         context_text = "No supporting metadata was retrieved."
 
-    # 3. Build prompt that emphasizes citations and safety
+    # 3. Build prompt that emphasizes citations, safety, and recent history
+    history_text = _format_history_for_prompt(history)
+    history_section = (
+        f"Recent conversation (most recent last):\n{history_text}\n\n" if history_text else ""
+    )
+
     system_prompt = (
         "You are a helpful assistant that answers company-specific questions using only "
         "the structured metadata provided (e.g., Jira issues, Confluence pages, Git files). "
@@ -313,9 +324,10 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
         "and summaries. Always cite relevant sources using the exact [source:identifier] format. "
         "If the metadata is insufficient, say you do not know or ask for clarification. "
         "Explicitly refuse to output code snippets, secrets, or credentials, and explain that you can only "
-        "discuss the metadata at a high level."
+        "discuss the metadata at a high level. Use the recent conversation history, when available, to maintain context."
     )
     user_prompt = (
+        f"{history_section}"
         "Metadata entries:\n"
         f"{context_text}\n\n"
         f"Question: {query}\n\n"
@@ -342,3 +354,86 @@ def generate_answer(company_id: int, chatbot_id: int, query: str, top_k: int = 5
     safe_answer = _sanitize_answer(raw_answer, metadata_entries)
 
     return {"answer": safe_answer, "sources": metadata_entries}
+_MAX_HISTORY_TURNS = 6
+_MAX_HISTORY_CHARACTERS = 1600
+
+
+def _format_history_for_prompt(
+    history: Optional[List[Dict[str, str]]],
+    max_turns: int = _MAX_HISTORY_TURNS,
+    max_characters: int = _MAX_HISTORY_CHARACTERS,
+) -> str:
+    """Return a compact representation of ``history`` limited by turns and characters."""
+
+    if not history:
+        return ""
+
+    sanitized_turns: List[Dict[str, str]] = []
+    for turn in history[-max_turns:]:
+        user_message = (turn.get("user") or "").strip()
+        assistant_message = (turn.get("assistant") or "").strip()
+        if not user_message and not assistant_message:
+            continue
+        sanitized_turns.append({"user": user_message, "assistant": assistant_message})
+
+    if not sanitized_turns:
+        return ""
+
+    selected_blocks: List[str] = []
+    consumed = 0
+
+    for turn in reversed(sanitized_turns):
+        segments: List[str] = []
+        if turn["user"]:
+            segments.append(f"User: {turn['user']}")
+        if turn["assistant"]:
+            segments.append(f"Assistant: {turn['assistant']}")
+
+        if not segments:
+            continue
+
+        block = "\n".join(segments)
+        separator = 2 if selected_blocks else 0
+        projected = consumed + len(block) + separator
+
+        if projected > max_characters:
+            remaining = max_characters - consumed - separator
+            if remaining <= 0:
+                break
+
+            local_remaining = remaining
+            truncated_parts: List[str] = []
+            for idx, segment in enumerate(segments):
+                if idx > 0:
+                    if local_remaining <= 1:
+                        break
+                    truncated_parts.append("\n")
+                    local_remaining -= 1
+
+                if local_remaining <= 0:
+                    break
+
+                truncated_segment = _truncate_text(segment, max(local_remaining, 16))
+                if not truncated_segment:
+                    break
+
+                # Ensure we only account for the actual characters we will append
+                available = min(len(truncated_segment), local_remaining)
+                truncated_parts.append(truncated_segment[:available])
+                local_remaining -= available
+                if local_remaining <= 0:
+                    break
+
+            truncated_block = "".join(truncated_parts).rstrip()
+            if truncated_block:
+                selected_blocks.append(truncated_block if truncated_block.endswith("…") else truncated_block + "…")
+            break
+
+        selected_blocks.append(block)
+        consumed = projected
+
+    if not selected_blocks:
+        return ""
+
+    selected_blocks.reverse()
+    return "\n\n".join(selected_blocks)
