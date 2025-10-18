@@ -10,6 +10,15 @@ from chat.utils.embeddings import get_openai_client, rerank_documents, search_do
 from chat.models import JiraIssue
 
 
+_SECRET_KEY_VALUE_PATTERN = re.compile(
+    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])\s*(?P<value>[^\s'\"]+)"
+)
+_OPENAI_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,}")
+_PEM_BLOCK_PATTERN = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+
+_MAX_METADATA_SNIPPET_CHARACTERS = 1200
+
+
 def _truncate_text(value: str, max_length: int) -> str:
     """Return ``value`` trimmed to ``max_length`` characters with ellipsis when needed."""
     if not value:
@@ -152,13 +161,47 @@ def _build_excerpt(content: str, max_length: int = 600) -> str:
     return excerpt
 
 
+def _redact_sensitive_snippet(value: str) -> str:
+    """Redact sensitive tokens from ``value`` while preserving other content."""
+
+    if not value:
+        return ""
+
+    sanitized = value
+    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
+        sanitized,
+    )
+    sanitized = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", sanitized)
+    sanitized = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", sanitized)
+
+    return sanitized.strip("\n")
+
+
+def _limit_snippet(value: str, max_length: int = _MAX_METADATA_SNIPPET_CHARACTERS) -> str:
+    """Return ``value`` trimmed to ``max_length`` characters with ellipsis when needed."""
+
+    if not value:
+        return ""
+
+    if len(value) <= max_length:
+        return value
+
+    truncated = value[:max_length].rstrip()
+    return f"{truncated}…"
+
+
 def _metadata_from_document(document: Dict) -> Dict:
     """Convert a search document into safe metadata for prompts and responses."""
 
-    content = (document.get("content") or "").strip()
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    stored_metadata = document.get("metadata") or {}
 
-    title = lines[0][:120] if lines else ""
+    raw_chunk_text = stored_metadata.get("chunk_text") or (document.get("content") or "")
+    sanitized_chunk = _redact_sensitive_snippet(raw_chunk_text)
+    snippet = _limit_snippet(sanitized_chunk)
+
+    lines = [line.strip() for line in sanitized_chunk.splitlines() if line.strip()]
+    title = stored_metadata.get("title") or (lines[0][:120] if lines else "")
 
     summary_lines: List[str] = []
     if lines:
@@ -171,7 +214,7 @@ def _metadata_from_document(document: Dict) -> Dict:
 
     summary_source = " ".join(summary_lines) if summary_lines else ""
     summary = _truncate_text(summary_source, 320)
-    excerpt = _build_excerpt(content)
+    excerpt = _build_excerpt(sanitized_chunk)
 
     metadata = {
         key: document.get(key)
@@ -180,17 +223,36 @@ def _metadata_from_document(document: Dict) -> Dict:
             "source",
             "source_id",
             "source_display",
-            "source_url",
             "similarity",
         )
         if document.get(key) is not None
     }
+
+    source_url = stored_metadata.get("source_url") or document.get("source_url")
+    if source_url:
+        metadata["source_url"] = source_url
+
     if title:
         metadata["title"] = title
     if summary:
         metadata["summary"] = summary
     if excerpt:
         metadata["excerpt"] = excerpt
+    if snippet:
+        metadata["snippet"] = snippet
+
+    for key in (
+        "path",
+        "space_key",
+        "section_heading",
+        "chunk_index",
+        "chunk_count",
+        "chunk_tokens",
+        "chunk_char_count",
+    ):
+        value = stored_metadata.get(key)
+        if value not in (None, ""):
+            metadata[key] = value
 
     keyword_source = summary or summary_source
     keywords = _extract_keywords(keyword_source) if keyword_source else []
@@ -211,13 +273,28 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
     if title:
         sections.append(f"Title: {title}")
 
+    section_heading = metadata.get("section_heading")
+    if section_heading and section_heading != title:
+        sections.append(f"Section: {section_heading}")
+
+    path = metadata.get("path")
+    if path:
+        sections.append(f"Path: {path}")
+
+    space_key = metadata.get("space_key")
+    if space_key:
+        sections.append(f"Space: {space_key}")
+
+    chunk_index = metadata.get("chunk_index")
+    chunk_count = metadata.get("chunk_count")
+    if isinstance(chunk_index, int) and isinstance(chunk_count, int):
+        sections.append(f"Chunk: {chunk_index + 1} of {chunk_count}")
+    elif isinstance(chunk_index, int):
+        sections.append(f"Chunk index: {chunk_index}")
+
     summary = metadata.get("summary")
     if summary and summary != title:
         sections.append(f"Summary: {summary}")
-
-    excerpt = metadata.get("excerpt")
-    if excerpt:
-        sections.append(f"Excerpt:\n{excerpt}")
 
     source_url = metadata.get("source_url")
     if source_url:
@@ -230,6 +307,12 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
     keywords = metadata.get("keywords")
     if keywords:
         sections.append(f"Keywords: {keywords}")
+
+    snippet = metadata.get("snippet") or metadata.get("excerpt")
+    if snippet:
+        sections.append("")
+        sections.append("Snippet:")
+        sections.append(snippet)
 
     return "\n".join(sections)
 
@@ -247,13 +330,6 @@ def _collect_citations(metadata_list: List[Dict]) -> List[str]:
         if token not in citations:
             citations.append(token)
     return citations
-
-
-_SECRET_KEY_VALUE_PATTERN = re.compile(
-    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])\s*(?P<value>[^\s'\"]+)"
-)
-_OPENAI_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,}")
-_PEM_BLOCK_PATTERN = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
 
 
 def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
