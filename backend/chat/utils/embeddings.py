@@ -250,17 +250,34 @@ def _segments_with_overlap(
 
         paragraph_tokens = paragraph_text.split()
         paragraph_token_count = len(paragraph_tokens)
+        if not paragraph_token_count:
+            continue
 
-        if current_tokens and current_tokens + paragraph_token_count > normalized_max_tokens:
-            finalize_chunk()
+        token_index = 0
+        while token_index < paragraph_token_count:
+            available_tokens = normalized_max_tokens - current_tokens
+            if available_tokens <= 0:
+                finalize_chunk()
+                continue
 
-        if not current_parts:
+            take = min(paragraph_token_count - token_index, available_tokens)
+            if take <= 0:
+                break
+
+            slice_tokens = paragraph_tokens[token_index : token_index + take]
+            slice_text = " ".join(slice_tokens).strip()
+            token_index += take
+
+            if not slice_text:
+                continue
+
+            if not current_parts or not chunk_has_new_content:
+                current_heading = paragraph_heading or current_heading
+
+            current_parts.append(slice_text)
+            current_tokens += len(slice_tokens)
             current_heading = paragraph_heading or current_heading
-
-        current_parts.append(paragraph_text)
-        current_tokens += paragraph_token_count
-        current_heading = paragraph_heading or current_heading
-        chunk_has_new_content = True
+            chunk_has_new_content = True
 
     finalize_chunk()
 
