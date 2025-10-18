@@ -102,6 +102,56 @@ def _extract_keywords(content: str, limit: int = 12) -> List[str]:
     return [word for word, _ in counts.most_common(limit)]
 
 
+def _condense_whitespace(value: str) -> str:
+    """Collapse consecutive whitespace into single spaces while preserving newlines."""
+
+    if not value:
+        return ""
+
+    normalized_lines = [re.sub(r"\s+", " ", line).strip() for line in value.splitlines()]
+    return "\n".join(line for line in normalized_lines if line)
+
+
+def _build_excerpt(content: str, max_length: int = 600) -> str:
+    """Return a sanitized excerpt constructed from the first informative paragraphs."""
+
+    if not content:
+        return ""
+
+    paragraphs = re.split(r"\n\s*\n", content)
+    excerpt_parts: List[str] = []
+    consumed = 0
+
+    for paragraph in paragraphs:
+        sanitized = _condense_whitespace(
+            re.sub(r"```.*?```", " ", paragraph, flags=re.DOTALL)
+        ).strip()
+        if not sanitized:
+            continue
+
+        separator = 2 if excerpt_parts else 0
+        projected = consumed + len(sanitized) + separator
+
+        if projected > max_length and consumed:
+            remaining = max_length - consumed - separator
+            if remaining > 0:
+                excerpt_parts.append(_truncate_text(sanitized, remaining))
+            break
+
+        if projected > max_length:
+            excerpt_parts.append(_truncate_text(sanitized, max_length))
+            break
+
+        excerpt_parts.append(sanitized)
+        consumed = projected
+
+        if consumed >= max_length:
+            break
+
+    excerpt = "\n\n".join(excerpt_parts).strip()
+    return excerpt
+
+
 def _metadata_from_document(document: Dict) -> Dict:
     """Convert a search document into safe metadata for prompts and responses."""
 
@@ -121,6 +171,7 @@ def _metadata_from_document(document: Dict) -> Dict:
 
     summary_source = " ".join(summary_lines) if summary_lines else ""
     summary = _truncate_text(summary_source, 320)
+    excerpt = _build_excerpt(content)
 
     metadata = {
         key: document.get(key)
@@ -138,6 +189,8 @@ def _metadata_from_document(document: Dict) -> Dict:
         metadata["title"] = title
     if summary:
         metadata["summary"] = summary
+    if excerpt:
+        metadata["excerpt"] = excerpt
 
     keyword_source = summary or summary_source
     keywords = _extract_keywords(keyword_source) if keyword_source else []
@@ -161,6 +214,10 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
     summary = metadata.get("summary")
     if summary and summary != title:
         sections.append(f"Summary: {summary}")
+
+    excerpt = metadata.get("excerpt")
+    if excerpt:
+        sections.append(f"Excerpt:\n{excerpt}")
 
     source_url = metadata.get("source_url")
     if source_url:
@@ -192,11 +249,25 @@ def _collect_citations(metadata_list: List[Dict]) -> List[str]:
     return citations
 
 
+_SECRET_KEY_VALUE_PATTERN = re.compile(
+    r"(?im)(?P<key>password|secret|token|apikey|api_key|access_key)\s*(?P<sep>[:=])\s*(?P<value>[^\s'\"]+)"
+)
+_OPENAI_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,}")
+_PEM_BLOCK_PATTERN = re.compile(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", re.DOTALL)
+
+
 def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
-    """Remove code blocks and ensure traceable citations are present."""
+    """Remove unsafe snippets while preserving legitimate technical explanations."""
 
     sanitized = answer or ""
     sanitized = re.sub(r"```.*?```", "[omitted code block]", sanitized, flags=re.DOTALL)
+
+    sanitized = _SECRET_KEY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group('key')}{match.group('sep')} [redacted sensitive data]",
+        sanitized,
+    )
+    sanitized = _OPENAI_KEY_PATTERN.sub("[redacted sensitive data]", sanitized)
+    sanitized = _PEM_BLOCK_PATTERN.sub("[redacted sensitive data]", sanitized)
 
     citations = _collect_citations(metadata_list)
     if citations and not any(token in sanitized for token in citations):

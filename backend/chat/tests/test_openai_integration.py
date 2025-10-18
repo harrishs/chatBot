@@ -1,5 +1,15 @@
+import os
+
+import django
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+os.environ.setdefault("ENCRYPTION_KEY", "wvRwBW8Y7-P2eFoRhqNRdbi8ZjsIvkTCmFll1xQ3hl8=")
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("DJANGO_SECRET_KEY", "unit-test-secret")
+
+django.setup()
 
 import httpx
 from django.test import SimpleTestCase, override_settings
@@ -90,6 +100,7 @@ class GenerateAnswerTests(SimpleTestCase):
                         "similarity": 0.91,
                         "title": "Issue title",
                         "summary": "Issue title A concise update about the fix.",
+                        "excerpt": "Issue title\nA concise update about the fix.",
                         "keywords": "issue, title, concise, update, fix.",
                     }
                 ],
@@ -100,8 +111,8 @@ class GenerateAnswerTests(SimpleTestCase):
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(item["content"] for item in messages if item["role"] == "user")
-        self.assertNotIn("Issue title\nA concise update about the fix.", user_content)
         self.assertIn("Summary: Issue title A concise update about the fix.", user_content)
+        self.assertIn("Excerpt:\nIssue title\nA concise update about the fix.", user_content)
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_rate_limit_error(self):
@@ -157,10 +168,43 @@ class GenerateAnswerTests(SimpleTestCase):
                     "similarity": 0.77,
                     "title": "main.py",
                     "summary": "main.py Implements the entry point.",
+                    "excerpt": "main.py\nImplements the entry point.",
                     "keywords": "main.py, implements, entry, point.",
                 }
             ],
         )
+
+    @override_settings(OPENAI_API_KEY="test-key")
+    def test_generate_answer_redacts_sensitive_values_without_losing_context(self):
+        mock_client = Mock()
+        mock_choice = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Use token=abc12345 when syncing configs [github:app/config.yaml]"
+            )
+        )
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        mock_client.chat.completions.create.return_value = mock_response
+
+        documents = [
+            {
+                "source": "github",
+                "source_id": "app/config.yaml",
+                "source_display": "app/config.yaml",
+                "content": "config.yaml\nContains environment defaults.",
+                "similarity": 0.68,
+            }
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ):
+            result = rag.generate_answer(
+                company_id=1, chatbot_id=2, query="How do I sync configs?"
+            )
+
+        self.assertIn("token= [redacted sensitive data]", result["answer"])
+        self.assertIn("[github:app/config.yaml]", result["answer"])
+        self.assertNotIn("abc12345", result["answer"])
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_network_error(self):
