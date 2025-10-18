@@ -306,6 +306,7 @@ class Document(models.Model):
     source = models.CharField(max_length=50, choices=SOURCE_CHOICES)
     source_id = models.CharField(max_length=500)
     content = models.TextField()
+    metadata = models.JSONField(default=dict, blank=True)
     embedding = VectorField(dimensions=1536)
     created_at = models.DateTimeField(auto_now_add=True)
 

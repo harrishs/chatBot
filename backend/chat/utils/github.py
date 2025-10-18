@@ -203,7 +203,13 @@ def ingest_github_files(sync: GitRepoSync, files: Iterable[GitRepoFile] | None =
             chatbot=sync.chatBot,
             source="github",
             source_id=stable_source_id,
-            content=f.content
+            content=f.content,
+            metadata={
+                "repository": sync.repo_full_name,
+                "branch": sync.branch,
+                "path": f.path,
+                "sha": f.sha,
+            },
         )
         count += len(docs)
     return count

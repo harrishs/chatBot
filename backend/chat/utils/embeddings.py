@@ -1,7 +1,8 @@
 import logging
+import re
 import time
 from math import sqrt
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
@@ -123,16 +124,172 @@ def _tokenize_query(text: str) -> List[str]:
 
     return [token for token in (text or "").lower().split() if token]
 
-def chunk_text(text, max_tokens=1000):
-    max_chars = max_tokens * 4
+def _normalize_metadata(metadata: Optional[Mapping[str, object]]) -> Dict[str, object]:
+    if not metadata:
+        return {}
 
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + max_chars
-        chunks.append(text[start:end])
-        start = end
-    return chunks
+    if not isinstance(metadata, Mapping):  # pragma: no cover - defensive
+        raise TypeError("metadata must be a mapping if provided")
+
+    normalized: Dict[str, object] = {}
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            normalized[str(key)] = value
+        elif isinstance(value, Mapping):
+            normalized[str(key)] = _normalize_metadata(value)
+        elif isinstance(value, (list, tuple, set)):
+            normalized[str(key)] = [
+                item
+                if isinstance(item, (str, int, float, bool)) or item is None
+                else str(item)
+                for item in value
+            ]
+        else:
+            normalized[str(key)] = str(value)
+
+    return normalized
+
+
+def _split_paragraphs_with_headings(text: str) -> List[Tuple[str, Optional[str]]]:
+    paragraphs: List[Tuple[str, Optional[str]]] = []
+    active_heading: Optional[str] = None
+    buffer: List[str] = []
+
+    lines = text.splitlines()
+    for line in lines:
+        stripped = line.strip()
+        heading_match = re.match(r"^(#+)\s*(.+)?$", stripped)
+        if heading_match:
+            if buffer:
+                paragraph_text = "\n".join(buffer).strip()
+                if paragraph_text:
+                    paragraphs.append((paragraph_text, active_heading))
+                buffer = []
+
+            heading_value = (heading_match.group(2) or "").strip() or None
+            active_heading = heading_value or active_heading
+            paragraphs.append((stripped, heading_value))
+            continue
+
+        if not stripped:
+            if buffer:
+                paragraph_text = "\n".join(buffer).strip()
+                if paragraph_text:
+                    paragraphs.append((paragraph_text, active_heading))
+                buffer = []
+            continue
+
+        buffer.append(line)
+
+    if buffer:
+        paragraph_text = "\n".join(buffer).strip()
+        if paragraph_text:
+            paragraphs.append((paragraph_text, active_heading))
+
+    if not paragraphs and text.strip():
+        paragraphs.append((text.strip(), active_heading))
+
+    return paragraphs
+
+
+def _segments_with_overlap(
+    text: str,
+    *,
+    max_tokens: int = 1000,
+    overlap_tokens: int = 100,
+) -> List[Tuple[str, Optional[str]]]:
+    normalized_max_tokens = max(1, int(max_tokens or 1))
+    normalized_overlap = max(0, min(int(overlap_tokens or 0), normalized_max_tokens - 1))
+
+    paragraphs = _split_paragraphs_with_headings(text)
+    if not paragraphs:
+        return []
+
+    segments: List[Tuple[str, Optional[str]]] = []
+    current_parts: List[str] = []
+    current_tokens = 0
+    current_heading: Optional[str] = None
+    chunk_has_new_content = False
+
+    def finalize_chunk() -> None:
+        nonlocal current_parts, current_tokens, current_heading, chunk_has_new_content
+
+        if not current_parts or not chunk_has_new_content:
+            current_parts = []
+            current_tokens = 0
+            chunk_has_new_content = False
+            return
+
+        chunk_text = "\n\n".join(part.strip() for part in current_parts if part.strip()).strip()
+        if not chunk_text:
+            current_parts = []
+            current_tokens = 0
+            chunk_has_new_content = False
+            return
+
+        segments.append((chunk_text, current_heading))
+
+        if normalized_overlap and chunk_text:
+            tokens = chunk_text.split()
+            overlap_count = min(len(tokens), normalized_overlap)
+            overlap_text = " ".join(tokens[-overlap_count:]) if overlap_count else ""
+            current_parts = [overlap_text] if overlap_text else []
+            current_tokens = overlap_count
+            chunk_has_new_content = False
+        else:
+            current_parts = []
+            current_tokens = 0
+            chunk_has_new_content = False
+
+    for paragraph_text, paragraph_heading in paragraphs:
+        paragraph_text = paragraph_text.strip()
+        if not paragraph_text:
+            continue
+
+        paragraph_tokens = paragraph_text.split()
+        paragraph_token_count = len(paragraph_tokens)
+
+        if current_tokens and current_tokens + paragraph_token_count > normalized_max_tokens:
+            finalize_chunk()
+
+        if not current_parts:
+            current_heading = paragraph_heading or current_heading
+
+        current_parts.append(paragraph_text)
+        current_tokens += paragraph_token_count
+        current_heading = paragraph_heading or current_heading
+        chunk_has_new_content = True
+
+    finalize_chunk()
+
+    return segments
+
+
+def _format_metadata_for_embedding(metadata: Mapping[str, object]) -> str:
+    if not metadata:
+        return ""
+
+    lines: List[str] = []
+    for key, value in metadata.items():
+        if value in (None, ""):
+            continue
+        label = str(key).replace("_", " ").strip().title()
+        if isinstance(value, list):
+            filtered = [str(item) for item in value if item not in (None, "")]
+            if not filtered:
+                continue
+            joined = ", ".join(filtered)
+            lines.append(f"{label}: {joined}")
+        elif isinstance(value, Mapping):
+            nested = _format_metadata_for_embedding(value)
+            if nested:
+                lines.append(f"{label}: {nested}")
+        else:
+            lines.append(f"{label}: {value}")
+
+    return "\n".join(lines)
 
 
 def _normalize_source_id(source_id: str) -> str:
@@ -141,24 +298,65 @@ def _normalize_source_id(source_id: str) -> str:
     return source_id.split("_part_", 1)[0]
 
 
-def save_document(company, chatbot, source, source_id, content):
-    """
-    Save a document with its embedding to the database.
-    """
-    chunks = chunk_text(content, max_tokens=1000)
+def save_document(
+    *,
+    company,
+    chatbot,
+    source,
+    source_id,
+    content,
+    metadata: Optional[Mapping[str, object]] = None,
+    max_tokens: int = 1000,
+    overlap_tokens: int = 100,
+):
+    """Persist a document broken into overlapping segments with metadata-aware embeddings."""
+
+    normalized_metadata = _normalize_metadata(metadata)
+    segments = _segments_with_overlap(
+        content,
+        max_tokens=max_tokens,
+        overlap_tokens=overlap_tokens,
+    )
+
+    if not segments:
+        return []
 
     docs = []
-    for idx, chunk in enumerate(chunks):
-        embedding = embed_text(chunk)
-        chunk_id = f"{source_id}_part_{idx}" if len(chunks) > 1 else source_id
+    total_segments = len(segments)
+
+    for idx, (segment_text, section_heading) in enumerate(segments):
+        chunk_metadata = dict(normalized_metadata)
+        heading_value = section_heading
+        if not heading_value:
+            heading_match = re.search(r"^#+\s*(.+)$", segment_text, re.MULTILINE)
+            if heading_match:
+                heading_value = (heading_match.group(1) or "").strip() or None
+        if heading_value:
+            chunk_metadata["section_heading"] = heading_value
+        chunk_metadata["chunk_index"] = idx
+        chunk_metadata["chunk_count"] = total_segments
+
+        metadata_text = _format_metadata_for_embedding(chunk_metadata)
+        embedding_input = segment_text.strip()
+        if metadata_text:
+            embedding_input = f"{metadata_text}\n\n{embedding_input}" if embedding_input else metadata_text
+
+        embedding = embed_text(embedding_input)
+        chunk_id = f"{source_id}_part_{idx}" if total_segments > 1 else source_id
+
         doc, _ = Document.objects.update_or_create(
             company=company,
             chatbot=chatbot,
             source=source,
             source_id=chunk_id,
-            defaults={"content": chunk, "embedding": embedding},
+            defaults={
+                "content": embedding_input,
+                "embedding": embedding,
+                "metadata": chunk_metadata,
+            },
         )
         docs.append(doc)
+
     return docs
 
 def search_documents(
@@ -241,6 +439,7 @@ def search_documents(
                 if _normalize_source_id(item["doc"].source_id).startswith("http")
                 else None,
                 "content": item["doc"].content,
+                "metadata": item["doc"].metadata,
                 "similarity": float(item["similarity"]),
                 "lexical_score": float(item["lexical_score"]),
                 "combined_score": float(item["combined_score"]),
@@ -302,6 +501,7 @@ def search_documents(
             if _normalize_source_id(doc.source_id).startswith("http")
             else None,
             "content": doc.content,
+            "metadata": doc.metadata,
             "similarity": float(doc.similarity) if doc.similarity is not None else None,
             "lexical_score": float(doc.lexical_score) if doc.lexical_score is not None else 0.0,
             "combined_score": float(doc.combined_score) if doc.combined_score is not None else 0.0,

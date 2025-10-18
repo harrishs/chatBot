@@ -359,7 +359,13 @@ def ingest_confluence_pages(sync: ConfluenceSync, pages: Iterable[ConfluencePage
             chatbot=sync.chatBot,
             source="confluence",
             source_id=stable_source_id or str(page.pk),
-            content=page.content
+            content=page.content,
+            metadata={
+                "title": page.title,
+                "url": page.url,
+                "space_url": sync.space_url,
+                "page_id": page.remote_id,
+            },
         )
         documents_created += len(docs)
 
