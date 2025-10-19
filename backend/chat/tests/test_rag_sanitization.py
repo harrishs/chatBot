@@ -52,3 +52,23 @@ def test_sanitize_answer_retains_code_block_structure_after_redaction():
     assert sanitized.startswith("```")
     assert sanitized.endswith("```")
     assert "[redacted sensitive data]" in sanitized
+
+
+def test_sanitize_answer_allows_short_code_block_with_whitelisted_language():
+    answer = "Here is a helper function:\n```Python\nprint('ready')\n```"
+    sanitized = rag._sanitize_answer(answer, metadata_list=[])
+
+    assert "```python" in sanitized
+    assert "print('ready')" in sanitized
+
+
+def test_sanitize_answer_truncates_long_code_blocks_and_drops_unknown_language():
+    long_lines = "\n".join(f"value = {idx}" for idx in range(40))
+    answer = f"```fortran\n{long_lines}\n```"
+    sanitized = rag._sanitize_answer(answer, metadata_list=[])
+
+    assert "```fortran" not in sanitized
+    assert sanitized.startswith("```")
+    assert "value = 0" in sanitized
+    assert "value = 39" not in sanitized
+    assert "…" in sanitized
