@@ -34,6 +34,40 @@ _CODE_BLOCK_PATTERN = re.compile(
 )
 _INLINE_CODE_PATTERN = re.compile(r"`(?P<inline>[^`\n]{1,120})`")
 
+_CODE_BLOCK_LANGUAGE_ALIASES = {
+    "sh": "bash",
+    "shell": "bash",
+    "py": "python",
+    "plaintext": "",
+    "plain": "",
+    "text": "",
+    "yml": "yaml",
+    "ts": "typescript",
+    "ps1": "powershell",
+}
+_ALLOWED_CODE_BLOCK_LANGUAGES = {
+    "",
+    "bash",
+    "python",
+    "javascript",
+    "typescript",
+    "json",
+    "yaml",
+    "sql",
+    "ini",
+    "toml",
+    "html",
+    "css",
+    "go",
+    "java",
+    "kotlin",
+    "c",
+    "cpp",
+    "powershell",
+}
+_MAX_CODE_BLOCK_LINES = 12
+_MAX_CODE_BLOCK_CHARACTERS = 600
+
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
 _LOW_CONFIDENCE_THRESHOLD = 0.45
 _LOW_CONFIDENCE_DRAFT_COUNT = 3
@@ -1012,10 +1046,37 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
         return "".join(parts)
 
     def _sanitize_code_block(match: re.Match) -> str:
-        language = match.group("lang") or ""
-        newline = match.group("newline") or ""
+        raw_language = (match.group("lang") or "").strip()
+        normalized_language = raw_language.lower()
+        normalized_language = _CODE_BLOCK_LANGUAGE_ALIASES.get(
+            normalized_language, normalized_language
+        )
+        if normalized_language not in _ALLOWED_CODE_BLOCK_LANGUAGES:
+            language = ""
+        else:
+            language = normalized_language
+
         content = match.group("content") or ""
-        cleaned_content = _redact_sensitive_tokens(content)
+        cleaned_content = _redact_sensitive_tokens(content).strip("\n")
+
+        lines = cleaned_content.splitlines()
+        truncated = cleaned_content
+        was_truncated = False
+
+        if len(lines) > _MAX_CODE_BLOCK_LINES:
+            truncated = "\n".join(lines[:_MAX_CODE_BLOCK_LINES])
+            was_truncated = True
+
+        if len(truncated) > _MAX_CODE_BLOCK_CHARACTERS:
+            truncated = truncated[:_MAX_CODE_BLOCK_CHARACTERS].rstrip()
+            was_truncated = True
+
+        if was_truncated and truncated:
+            truncated = f"{truncated}\n…"
+
+        cleaned_content = truncated
+
+        newline = "\n" if cleaned_content else ""
         return f"```{language}{newline}{cleaned_content}```"
 
     parts: List[str] = []
@@ -1199,15 +1260,18 @@ def generate_answer(
         "Each entry is supplied as metadata with a label like [jira:PROJ-123] along with optional titles "
         "and summaries. Always cite relevant sources using the exact [source:identifier] format. "
         "If the metadata is insufficient, say you do not know or ask for clarification. "
-        "Explicitly refuse to output code snippets, secrets, or credentials, and explain that you can only "
-        "discuss the metadata at a high level. Use the recent conversation history, when available, to maintain context."
+        "You may include short, sanitized code excerpts (a few lines at most) when they come directly "
+        "from the supplied metadata and each excerpt is cited. Never expose secrets, credentials, or uncited "
+        "source material. Use the recent conversation history, when available, to maintain context."
     )
     user_prompt = (
         f"{history_section}"
         "Metadata entries (each includes contextual fields followed by a Snippet with the actual text excerpt):\n"
         f"{context_text}\n\n"
         f"Question: {query}\n\n"
-        "Respond concisely, cite the sources using their [source:identifier] labels, and do not reveal code or secrets."
+        "Respond concisely, cite the sources using their [source:identifier] labels, and only include "
+        "short, sanitized code excerpts when they are copied directly from a cited metadata snippet. "
+        "Do not share secrets or credentials."
     )
 
     client = get_openai_client()

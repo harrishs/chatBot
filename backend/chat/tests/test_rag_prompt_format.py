@@ -39,11 +39,12 @@ class GenerateAnswerPromptTests(TestCase):
             )
 
         messages = client.captured_kwargs["messages"]
+        system_prompt = messages[0]["content"]
         user_prompt = messages[1]["content"]
-        return result, user_prompt
+        return result, system_prompt, user_prompt
 
     def test_prompt_includes_git_snippet_and_path_metadata(self):
-        snippet = "def example():\n    return True"
+        snippet = "```python\ndef example():\n    return True\n```"
         documents = [
             {
                 "id": 1,
@@ -67,13 +68,17 @@ class GenerateAnswerPromptTests(TestCase):
         ]
 
         response_text = "Here is what I found [git:repo/backend/app.py]"
-        result, user_prompt = self._run_generate_answer(documents, response_text)
+        result, system_prompt, user_prompt = self._run_generate_answer(
+            documents, response_text
+        )
 
         self.assertIn("[git:repo/backend/app.py]", user_prompt)
         self.assertIn("- Title: Example Module", user_prompt)
         self.assertIn("- Path: repo/backend/app.py", user_prompt)
         self.assertIn("- Section: Usage", user_prompt)
         self.assertIn(f"Snippet:\n{snippet}", user_prompt)
+        self.assertIn("short, sanitized code excerpts", system_prompt)
+        self.assertIn("short, sanitized code excerpts", user_prompt)
 
         source_metadata = result["sources"][0]
         self.assertEqual(source_metadata["snippet"], snippet)
@@ -104,7 +109,7 @@ class GenerateAnswerPromptTests(TestCase):
         ]
 
         response_text = "Consult the documentation [confluence:ENG-123]"
-        result, user_prompt = self._run_generate_answer(documents, response_text)
+        result, _, user_prompt = self._run_generate_answer(documents, response_text)
 
         self.assertIn("[confluence:ENG-123]", user_prompt)
         self.assertIn("- Title: Release Playbook", user_prompt)
