@@ -372,6 +372,109 @@ class GenerateAnswerTests(SimpleTestCase):
         self.assertIn("Section: Overview", user_content)
         self.assertIn("Snippet:\nThe release introduces key capabilities.", user_content)
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        RAG_LOW_CONFIDENCE_THRESHOLD=0.95,
+        RAG_LOW_CONFIDENCE_DRAFT_COUNT=2,
+    )
+    def test_generate_answer_uses_judge_ranking_when_available(self):
+        mock_client = Mock()
+        mock_choices = [
+            SimpleNamespace(
+                message=SimpleNamespace(content="First attempt without much detail")
+            ),
+            SimpleNamespace(
+                message=SimpleNamespace(content="Improved answer referencing [jira:PROJ-1]")
+            ),
+        ]
+        mock_client.chat.completions.create.return_value = SimpleNamespace(choices=mock_choices)
+
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-1",
+                "source_display": "PROJ-1",
+                "content": "Update",
+                "metadata": {
+                    "title": "Issue title",
+                    "chunk_text": "Summary of the fix",
+                },
+                "similarity": 0.4,
+            }
+        ]
+
+        judge_response = {
+            "rankings": [
+                {"index": 1, "score": 0.92, "feedback": "Cites the source"},
+                {"index": 0, "score": 0.35},
+            ],
+            "rewrite": "Consider adding mitigation details.",
+        }
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ), patch("chat.utils.rag.rerank_documents", return_value=documents), patch(
+            "chat.utils.rag._judge_answer_drafts", return_value=judge_response
+        ) as mock_judge:
+            result = rag.generate_answer(company_id=1, chatbot_id=2, query="question?")
+
+        mock_judge.assert_called_once()
+        self.assertEqual(result["answer"], "Improved answer referencing [jira:PROJ-1]")
+        self.assertEqual(result["reasoning_trace"]["evaluation_method"], "llm_judge")
+        self.assertIn("judge", result["reasoning_trace"])
+        self.assertEqual(
+            result["reasoning_trace"]["judge"]["rankings"][0]["index"],
+            1,
+        )
+        self.assertIn("rewrite", result["reasoning_trace"]["judge"])
+        self.assertIn("judge_score", result["drafts"][1])
+        self.assertEqual(result["drafts"][1]["judge_score"], 0.92)
+        self.assertEqual(result["drafts"][1]["answer"], result["answer"])
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        RAG_LOW_CONFIDENCE_THRESHOLD=0.95,
+        RAG_LOW_CONFIDENCE_DRAFT_COUNT=2,
+    )
+    def test_generate_answer_falls_back_when_judge_errors(self):
+        mock_client = Mock()
+        mock_choices = [
+            SimpleNamespace(
+                message=SimpleNamespace(content="Answer with citation [jira:PROJ-1]")
+            ),
+            SimpleNamespace(message=SimpleNamespace(content="Answer without citation")),
+        ]
+        mock_client.chat.completions.create.return_value = SimpleNamespace(choices=mock_choices)
+
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-1",
+                "source_display": "PROJ-1",
+                "content": "Update",
+                "metadata": {
+                    "title": "Issue title",
+                    "chunk_text": "Summary of the fix",
+                },
+                "similarity": 0.4,
+            }
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ), patch("chat.utils.rag.rerank_documents", return_value=documents), patch(
+            "chat.utils.rag._judge_answer_drafts", side_effect=RuntimeError("judge failed")
+        ) as mock_judge:
+            result = rag.generate_answer(company_id=1, chatbot_id=2, query="question?")
+
+        mock_judge.assert_called_once()
+        self.assertEqual(result["answer"], "Answer with citation [jira:PROJ-1]")
+        self.assertEqual(
+            result["reasoning_trace"]["evaluation_method"], "heuristic_citation_scoring"
+        )
+        self.assertIn("judge_error", result["reasoning_trace"])
+        self.assertEqual(result["reasoning_trace"]["heuristic_selected_index"], 0)
+
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_redacts_sensitive_values_without_losing_context(self):
         mock_client = Mock()
@@ -462,10 +565,15 @@ class GenerateAnswerTests(SimpleTestCase):
             result["drafts"][1]["score"],
             result["drafts"][0]["score"],
         )
-        self.assertEqual(
-            mock_client.chat.completions.create.call_args.kwargs.get("n"),
-            3,
+        draft_call_n = next(
+            (
+                call.kwargs.get("n")
+                for call in mock_client.chat.completions.create.call_args_list
+                if call.kwargs.get("n") is not None
+            ),
+            None,
         )
+        self.assertEqual(draft_call_n, 3)
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_network_error(self):

@@ -735,6 +735,119 @@ def _evaluate_answer_draft(
     }
 
 
+def _judge_answer_drafts(
+    question: str,
+    metadata_entries: Sequence[Dict[str, Any]],
+    drafts: Sequence[Dict[str, Any]],
+    *,
+    model_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Use an LLM judge to rank answer drafts and suggest rewrites."""
+
+    if len(drafts) < 2:
+        return None
+
+    model_choice = model_name or getattr(settings, "RAG_DRAFT_JUDGE_MODEL", "gpt-4o-mini")
+    if not model_choice:
+        return None
+
+    client = get_openai_client()
+
+    context_sections = [_format_metadata_for_prompt(entry) for entry in metadata_entries]
+    context_text = "\n\n".join(context_sections) if context_sections else "No supporting metadata was retrieved."
+
+    draft_descriptions: List[str] = []
+    for draft in drafts:
+        index = draft.get("index")
+        answer = draft.get("answer") or ""
+        draft_descriptions.append(f"Draft {index}:\n{answer}".strip())
+
+    judge_instructions = (
+        "You are an impartial judge tasked with ranking assistant answers."
+        " Consider citation usage, correctness, helpfulness, and alignment with the provided metadata."
+        " Score each draft between 0 and 1 (higher is better)."
+        " If none are satisfactory, you may still rank them but give lower scores."
+        " Optionally propose how the answer could be improved in a succinct rewrite suggestion."
+        " Respond ONLY in JSON with the following shape:"
+        " {\"rankings\": [{\"index\": <draft index>, \"score\": <0-1 float>,"
+        " \"feedback\": <optional string>}...], \"rewrite\": <optional string>}"
+        " Sorted rankings must list the best draft first."
+    )
+
+    judge_prompt = (
+        f"Question:\n{question}\n\n"
+        f"Metadata context:\n{context_text}\n\n"
+        f"Candidate drafts:\n\n" + "\n\n".join(draft_descriptions)
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model_choice,
+            messages=[
+                {"role": "system", "content": judge_instructions},
+                {"role": "user", "content": judge_prompt},
+            ],
+            temperature=0.0,
+        )
+    except RateLimitError as exc:
+        raise RuntimeError("OpenAI rate limit exceeded while judging drafts") from exc
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise RuntimeError("Failed to reach OpenAI while judging drafts") from exc
+
+    response_choices = list(getattr(response, "choices", []) or [])
+    if not response_choices:
+        return None
+
+    first_choice = response_choices[0]
+    message = getattr(first_choice, "message", None)
+    content = getattr(message, "content", "") if message else ""
+    if not content:
+        return None
+
+    parsed: Optional[Dict[str, Any]]
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    rankings_raw = parsed.get("rankings")
+    normalized_rankings: List[Dict[str, Any]] = []
+    if isinstance(rankings_raw, list):
+        for entry in rankings_raw:
+            if not isinstance(entry, dict):
+                continue
+            index = entry.get("index")
+            if not isinstance(index, int) or not (0 <= index < len(drafts)):
+                continue
+            score = entry.get("score")
+            try:
+                score_value = float(score) if score is not None else None
+            except (TypeError, ValueError):
+                score_value = None
+            normalized_entry: Dict[str, Any] = {"index": index}
+            if score_value is not None:
+                normalized_entry["score"] = max(0.0, min(1.0, score_value))
+            feedback = entry.get("feedback")
+            if isinstance(feedback, str) and feedback.strip():
+                normalized_entry["feedback"] = feedback.strip()
+            normalized_rankings.append(normalized_entry)
+
+    if not normalized_rankings:
+        return None
+
+    normalized_rankings.sort(key=lambda item: item.get("score", -1.0), reverse=True)
+
+    result: Dict[str, Any] = {"rankings": normalized_rankings}
+    rewrite = parsed.get("rewrite") or parsed.get("suggested_rewrite")
+    if isinstance(rewrite, str) and rewrite.strip():
+        result["rewrite"] = rewrite.strip()
+
+    return result
+
+
 def _redact_sensitive_tokens(value: str) -> str:
     """Redact known sensitive token patterns within ``value``."""
 
@@ -1145,9 +1258,47 @@ def generate_answer(
             }
         )
 
-    best_index, best_draft = max(
+    heuristic_index, _ = max(
         enumerate(drafts), key=lambda item: item[1]["score"]
     )
+
+    selected_index = heuristic_index
+    evaluation_method = "heuristic_citation_scoring"
+    judge_details: Optional[Dict[str, Any]] = None
+    judge_error: Optional[str] = None
+
+    if len(drafts) > 1:
+        try:
+            judge_details = _judge_answer_drafts(query, metadata_entries, drafts)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            judge_error = str(exc)
+            logger.warning("Draft judge failed: %s", exc, exc_info=True)
+        else:
+            if judge_details and judge_details.get("rankings"):
+                top_entry = next(
+                    (
+                        entry
+                        for entry in judge_details["rankings"]
+                        if isinstance(entry.get("index"), int)
+                    ),
+                    None,
+                )
+                if top_entry is not None:
+                    candidate_index = top_entry["index"]
+                    if 0 <= candidate_index < len(drafts):
+                        selected_index = candidate_index
+                        evaluation_method = "llm_judge"
+                        for entry in judge_details["rankings"]:
+                            idx = entry.get("index")
+                            if isinstance(idx, int) and 0 <= idx < len(drafts):
+                                score = entry.get("score")
+                                if isinstance(score, (int, float)):
+                                    drafts[idx]["judge_score"] = float(score)
+                                feedback = entry.get("feedback")
+                                if isinstance(feedback, str) and feedback:
+                                    drafts[idx]["judge_feedback"] = feedback
+
+    best_draft = drafts[selected_index]
 
     citation_bonus = 0.1 * min(len(set(best_draft["citations"])), 3)
     uncertainty_penalty = 0.2 if (
@@ -1158,14 +1309,20 @@ def generate_answer(
         min(1.0, retrieval_confidence + citation_bonus - uncertainty_penalty),
     )
 
-    reasoning_trace = {
+    reasoning_trace: Dict[str, Any] = {
         "retrieval_confidence": retrieval_confidence,
         "low_confidence_mode": low_confidence_mode,
         "requested_drafts": requested_drafts,
-        "selected_draft_index": best_index,
+        "selected_draft_index": selected_index,
         "draft_scores": [draft["score"] for draft in drafts],
-        "evaluation_method": "heuristic_citation_scoring",
+        "evaluation_method": evaluation_method,
     }
+    if judge_details:
+        reasoning_trace["judge"] = judge_details
+    if judge_error:
+        reasoning_trace["judge_error"] = judge_error
+    if evaluation_method != "llm_judge":
+        reasoning_trace["heuristic_selected_index"] = heuristic_index
 
     if rewrite_details:
         reasoning_trace["query_rewrite"] = rewrite_details
