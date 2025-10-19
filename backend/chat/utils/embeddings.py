@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from math import sqrt
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -35,6 +37,47 @@ logger = logging.getLogger(__name__)
 _shared_openai_client = None
 
 _MAX_CHUNK_TEXT_CHARACTERS = 1800
+
+_RETRIEVAL_FALLBACK_CACHE: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+_MAX_FALLBACK_CACHE_SIZE = 200
+
+
+def record_retrieval_fallback_event(
+    *,
+    event_type: str,
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    improved: bool,
+    details: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    """Cache and log fallback attempts for later inspection."""
+
+    fingerprint_source = f"{event_type}:{company_id}:{chatbot_id}:{query}".encode("utf-8")
+    fingerprint = hashlib.sha256(fingerprint_source).hexdigest()
+
+    entry: Dict[str, object] = {
+        "timestamp": timezone.now(),
+        "event_type": event_type,
+        "company_id": company_id,
+        "chatbot_id": chatbot_id,
+        "query": query,
+        "improved": bool(improved),
+        "details": details or {},
+    }
+
+    _RETRIEVAL_FALLBACK_CACHE[fingerprint] = entry
+    while len(_RETRIEVAL_FALLBACK_CACHE) > _MAX_FALLBACK_CACHE_SIZE:
+        _RETRIEVAL_FALLBACK_CACHE.popitem(last=False)
+
+    logger.info(
+        "RAG retrieval fallback triggered: type=%s improved=%s details=%s",
+        event_type,
+        improved,
+        details or {},
+    )
+
+    return entry
 
 
 def get_openai_client() -> OpenAI:
@@ -437,38 +480,43 @@ def save_document(
 
     return docs
 
-def search_documents(
+def _search_documents_single(
+    *,
     company_id: int,
     chatbot_id: int,
     query: str,
-    top_k: int = 5,
-    sources: Optional[Iterable[str]] = None,
-):
-    """Search for relevant documents using vector and lexical signals."""
-
-    query_embedding = embed_text(query)
-    query_tokens = _tokenize_query(query)
-
-    try:
-        top_k = int(top_k)
-    except (TypeError, ValueError):
-        top_k = 1
-    if top_k < 1:
-        top_k = 1
+    top_k: int,
+    sources: Optional[Iterable[str]],
+    query_embedding: Sequence[float],
+    query_tokens: Sequence[str],
+    lexical_only: bool,
+) -> List[Dict[str, object]]:
+    """Execute a single retrieval pass with the configured scoring strategy."""
 
     vector_weight = getattr(settings, "RAG_VECTOR_WEIGHT", 0.7)
     websearch_weight = getattr(settings, "RAG_WEBSEARCH_WEIGHT", 0.2)
     trigram_weight = getattr(settings, "RAG_TRIGRAM_WEIGHT", 0.1)
     trigram_floor = getattr(settings, "RAG_TRIGRAM_FLOOR", 0.1)
-    total_weight = vector_weight + websearch_weight + trigram_weight
-    if total_weight <= 0:
-        vector_weight = 1.0
-        websearch_weight = 0.0
-        trigram_weight = 0.0
+
+    if lexical_only:
+        vector_weight = 0.0
+        total_lexical = websearch_weight + trigram_weight
+        if total_lexical <= 0:
+            websearch_weight = 1.0
+            trigram_weight = 0.0
+        else:
+            websearch_weight /= total_lexical
+            trigram_weight /= total_lexical
     else:
-        vector_weight /= total_weight
-        websearch_weight /= total_weight
-        trigram_weight /= total_weight
+        total_weight = vector_weight + websearch_weight + trigram_weight
+        if total_weight <= 0:
+            vector_weight = 1.0
+            websearch_weight = 0.0
+            trigram_weight = 0.0
+        else:
+            vector_weight /= total_weight
+            websearch_weight /= total_weight
+            trigram_weight /= total_weight
 
     base_queryset = Document.objects.filter(company_id=company_id, chatbot_id=chatbot_id)
     if sources:
@@ -478,7 +526,7 @@ def search_documents(
         scored_docs = []
         query_phrase = " ".join(query_tokens)
         for doc in base_queryset:
-            similarity = _cosine_similarity(doc.embedding, query_embedding)
+            similarity = _cosine_similarity(doc.embedding, query_embedding) if not lexical_only else 0.0
             websearch_raw = 0.0
             trigram_raw = 0.0
             if query_tokens:
@@ -621,9 +669,11 @@ def search_documents(
         )
     )
 
+    similarity_field = Coalesce(F("similarity"), Value(0.0)) if not lexical_only else Value(0.0)
+
     queryset = queryset.annotate(
         combined_score=ExpressionWrapper(
-            Value(vector_weight) * Coalesce(F("similarity"), Value(0.0))
+            Value(vector_weight) * similarity_field
             + F("lexical_score"),
             output_field=FloatField(),
         )
@@ -649,7 +699,7 @@ def search_documents(
             else None,
             "content": doc.content,
             "metadata": doc.metadata,
-            "similarity": float(doc.similarity) if doc.similarity is not None else 0.0,
+            "similarity": float(doc.similarity) if (doc.similarity is not None and not lexical_only) else 0.0,
             "lexical_score": float(doc.lexical_score) if doc.lexical_score is not None else 0.0,
             "websearch_score": float(doc.websearch_score) if doc.websearch_score is not None else 0.0,
             "trigram_score": float(doc.trigram_score) if doc.trigram_score is not None else 0.0,
@@ -657,6 +707,191 @@ def search_documents(
         }
         for doc in rows
     ]
+
+
+def _finalize_search_attempts(
+    attempts: Sequence[Dict[str, object]]
+) -> Tuple[List[Dict[str, object]], float]:
+    """Merge, deduplicate, and normalize search results."""
+
+    if not attempts:
+        return [], 0.0
+
+    limit = max(int(attempt.get("top_k", 0) or 0) for attempt in attempts)
+    if limit <= 0:
+        limit = max(len(attempt.get("documents", [])) for attempt in attempts)
+
+    dedup: Dict[int, Dict[str, object]] = {}
+    for attempt in attempts:
+        documents = attempt.get("documents") or []
+        for doc in documents:
+            doc_id = doc.get("id")
+            if doc_id is None:
+                continue
+            candidate = dict(doc)
+            existing = dedup.get(doc_id)
+            if existing is None or candidate.get("combined_score", 0.0) > existing.get(
+                "combined_score", 0.0
+            ):
+                dedup[doc_id] = candidate
+
+    ranked = sorted(
+        dedup.values(),
+        key=lambda item: (
+            -float(item.get("combined_score", 0.0)),
+            -float(item.get("lexical_score", 0.0)),
+            -float(item.get("similarity", 0.0)),
+            int(item.get("id", 0)),
+        ),
+    )
+
+    best_score = max((float(item.get("combined_score", 0.0)) for item in ranked), default=0.0)
+    for item in ranked:
+        if best_score > 0:
+            item["normalized_score"] = float(item.get("combined_score", 0.0)) / best_score
+        else:
+            item["normalized_score"] = 0.0
+
+    if limit <= 0:
+        return ranked, best_score
+
+    return ranked[:limit], best_score
+
+
+def search_documents(
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    top_k: int = 5,
+    sources: Optional[Iterable[str]] = None,
+):
+    """Search for relevant documents using vector and lexical signals with fallbacks."""
+
+    query_embedding = embed_text(query)
+    query_tokens = _tokenize_query(query)
+
+    try:
+        top_k = int(top_k)
+    except (TypeError, ValueError):
+        top_k = 1
+    if top_k < 1:
+        top_k = 1
+
+    primary_documents = _search_documents_single(
+        company_id=company_id,
+        chatbot_id=chatbot_id,
+        query=query,
+        top_k=top_k,
+        sources=sources,
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        lexical_only=False,
+    )
+
+    attempts: List[Dict[str, object]] = [
+        {
+            "label": "primary",
+            "top_k": top_k,
+            "documents": primary_documents,
+        }
+    ]
+
+    merged_primary, primary_best = _finalize_search_attempts(attempts)
+
+    min_score_threshold = float(
+        getattr(settings, "RAG_SEARCH_MIN_SCORE", 0.35)
+    )
+
+    if primary_best >= min_score_threshold or not merged_primary:
+        return merged_primary
+
+    fallback_attempts: List[Dict[str, object]] = []
+    fallback_details: List[Dict[str, object]] = []
+
+    expanded_top_k = max(top_k * 2, top_k + 5)
+    broadened = _search_documents_single(
+        company_id=company_id,
+        chatbot_id=chatbot_id,
+        query=query,
+        top_k=expanded_top_k,
+        sources=sources,
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        lexical_only=False,
+    )
+    fallback_attempts.append({"label": "broaden_top_k", "top_k": expanded_top_k, "documents": broadened})
+    fallback_details.append(
+        {
+            "label": "broaden_top_k",
+            "top_k": expanded_top_k,
+            "result_count": len(broadened),
+            "best_score": max((doc.get("combined_score", 0.0) for doc in broadened), default=0.0),
+        }
+    )
+
+    if sources:
+        widened = _search_documents_single(
+            company_id=company_id,
+            chatbot_id=chatbot_id,
+            query=query,
+            top_k=expanded_top_k,
+            sources=None,
+            query_embedding=query_embedding,
+            query_tokens=query_tokens,
+            lexical_only=False,
+        )
+        fallback_attempts.append(
+            {"label": "drop_source_filter", "top_k": expanded_top_k, "documents": widened}
+        )
+        fallback_details.append(
+            {
+                "label": "drop_source_filter",
+                "top_k": expanded_top_k,
+                "result_count": len(widened),
+                "best_score": max((doc.get("combined_score", 0.0) for doc in widened), default=0.0),
+            }
+        )
+
+    lexical_top_k = max(expanded_top_k, top_k + 10)
+    lexical_only_docs = _search_documents_single(
+        company_id=company_id,
+        chatbot_id=chatbot_id,
+        query=query,
+        top_k=lexical_top_k,
+        sources=None if sources else sources,
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        lexical_only=True,
+    )
+    fallback_attempts.append(
+        {"label": "lexical_only", "top_k": lexical_top_k, "documents": lexical_only_docs}
+    )
+    fallback_details.append(
+        {
+            "label": "lexical_only",
+            "top_k": lexical_top_k,
+            "result_count": len(lexical_only_docs),
+            "best_score": max((doc.get("combined_score", 0.0) for doc in lexical_only_docs), default=0.0),
+        }
+    )
+
+    attempts.extend(fallback_attempts)
+    merged_results, final_best = _finalize_search_attempts(attempts)
+
+    record_retrieval_fallback_event(
+        event_type="search_low_score",
+        company_id=company_id,
+        chatbot_id=chatbot_id,
+        query=query,
+        improved=final_best > primary_best,
+        details={
+            "primary_best": primary_best,
+            "final_best": final_best,
+            "attempts": fallback_details,
+        },
+    )
+
+    return merged_results
 
 
 def _extract_json_from_text(text: str) -> Optional[object]:
