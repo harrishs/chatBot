@@ -1,7 +1,7 @@
 import re
 from collections import Counter
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from django.utils import timezone
 
@@ -21,6 +21,7 @@ _CODE_BLOCK_PATTERN = re.compile(
     r"```(?P<lang>[^\n`]*)((?P<newline>\n)?)(?P<content>.*?)```",
     re.DOTALL,
 )
+_INLINE_CODE_PATTERN = re.compile(r"`(?P<inline>[^`\n]{1,120})`")
 
 _MAX_METADATA_SNIPPET_CHARACTERS = 1200
 _LOW_CONFIDENCE_THRESHOLD = 0.45
@@ -489,6 +490,155 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
 
     sanitized = answer or ""
 
+    def _sanitize_free_text(value: str) -> str:
+        """Redact free text while preserving inline code snippets."""
+
+        if not value:
+            return value
+
+        segments: List[Dict[str, Any]] = []
+        last_end = 0
+
+        for inline in _INLINE_CODE_PATTERN.finditer(value):
+            prefix = value[last_end : inline.start()]
+            if prefix:
+                sanitized_prefix = _redact_sensitive_tokens(prefix)
+                if sanitized_prefix:
+                    segments.append({"text": sanitized_prefix, "is_inline": False})
+
+            inline_content = inline.group("inline") or ""
+            sanitized_inline = _redact_sensitive_tokens(inline_content)
+            segments.append({"text": sanitized_inline, "is_inline": True})
+            last_end = inline.end()
+
+        remainder = value[last_end:]
+        if remainder:
+            sanitized_remainder = _redact_sensitive_tokens(remainder)
+            if sanitized_remainder:
+                segments.append({"text": sanitized_remainder, "is_inline": False})
+
+        if not segments:
+            return _redact_sensitive_tokens(value)
+
+        def _replace_range_in_segments(
+            items: List[Dict[str, Any]], start: int, end: int, replacement: str
+        ) -> List[Dict[str, Any]]:
+            if start >= end:
+                return items
+
+            new_items: List[Dict[str, Any]] = []
+            current = 0
+            pending_replacement = replacement
+
+            for segment in items:
+                text = segment["text"]
+                length = len(text)
+                seg_start = current
+                seg_end = current + length
+
+                if seg_end <= start or seg_start >= end:
+                    new_items.append(segment)
+                else:
+                    before_len = max(0, start - seg_start)
+                    if before_len:
+                        new_items.append(
+                            {"text": text[:before_len], "is_inline": segment["is_inline"]}
+                        )
+
+                    if pending_replacement:
+                        new_items.append({"text": pending_replacement, "is_inline": False})
+                        pending_replacement = ""
+
+                    after_len = max(0, seg_end - end)
+                    if after_len:
+                        new_items.append(
+                            {"text": text[length - after_len :], "is_inline": segment["is_inline"]}
+                        )
+
+                current = seg_end
+
+            if pending_replacement:
+                new_items.append({"text": pending_replacement, "is_inline": False})
+
+            return new_items
+
+        def _match_spans_multiple_segments(
+            items: List[Dict[str, Any]], start: int, end: int
+        ) -> bool:
+            current = 0
+            first_index: Optional[int] = None
+
+            for index, segment in enumerate(items):
+                length = len(segment["text"])
+                seg_start = current
+                seg_end = current + length
+                current = seg_end
+
+                if length == 0:
+                    continue
+
+                if first_index is None and seg_start <= start < seg_end:
+                    first_index = index
+
+                if seg_start < end <= seg_end:
+                    if first_index is None:
+                        return False
+                    return index != first_index
+
+            return False
+
+        def _apply_pattern_across_segments(
+            items: List[Dict[str, Any]], pattern: re.Pattern, replacement_func: Callable[[re.Match], str]
+        ) -> List[Dict[str, Any]]:
+            combined = "".join(segment["text"] for segment in items)
+            search_start = 0
+
+            while True:
+                match = pattern.search(combined, search_start)
+                if not match:
+                    break
+
+                if "[redacted sensitive data]" in match.group(0):
+                    search_start = match.end()
+                    continue
+
+                if not _match_spans_multiple_segments(items, match.start(), match.end()):
+                    search_start = match.end()
+                    continue
+
+                replacement = replacement_func(match)
+                if replacement == match.group(0):
+                    search_start = match.end()
+                    continue
+
+                items = _replace_range_in_segments(items, match.start(), match.end(), replacement)
+                combined = "".join(segment["text"] for segment in items)
+                search_start = match.start() + len(replacement)
+
+            return items
+
+        segments = _apply_pattern_across_segments(
+            segments, _SECRET_KEY_VALUE_PATTERN, _redacted_secret_value
+        )
+        segments = _apply_pattern_across_segments(
+            segments, _OPENAI_KEY_PATTERN, lambda _: "[redacted sensitive data]"
+        )
+        segments = _apply_pattern_across_segments(
+            segments, _PEM_BLOCK_PATTERN, lambda _: "[redacted sensitive data]"
+        )
+
+        parts: List[str] = []
+        for segment in segments:
+            text = segment["text"]
+            if not text:
+                continue
+            if segment["is_inline"]:
+                parts.append(f"`{text}`")
+            else:
+                parts.append(text)
+
+        return "".join(parts)
+
     def _sanitize_code_block(match: re.Match) -> str:
         language = match.group("lang") or ""
         newline = match.group("newline") or ""
@@ -503,17 +653,17 @@ def _sanitize_answer(answer: str, metadata_list: List[Dict]) -> str:
         has_blocks = True
         prefix = sanitized[last_end : block.start()]
         if prefix:
-            parts.append(_redact_sensitive_tokens(prefix))
+            parts.append(_sanitize_free_text(prefix))
         parts.append(_sanitize_code_block(block))
         last_end = block.end()
 
     remainder = sanitized[last_end:]
     if has_blocks:
         if remainder:
-            parts.append(_redact_sensitive_tokens(remainder))
+            parts.append(_sanitize_free_text(remainder))
         sanitized = "".join(parts)
     else:
-        sanitized = _redact_sensitive_tokens(sanitized)
+        sanitized = _sanitize_free_text(sanitized)
 
     citations = _collect_citations(metadata_list)
     if citations and not any(token in sanitized for token in citations):
