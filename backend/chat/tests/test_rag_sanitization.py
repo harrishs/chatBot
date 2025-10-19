@@ -26,6 +26,11 @@ from chat.utils import rag
             ["`git status`", "token="],
             ["abc123"],
         ),
+        (
+            "Use `api_key=` followed by `abc123` to authenticate.",
+            ["api_key=", "[redacted sensitive data]"],
+            ["abc123"],
+        ),
     ],
 )
 def test_sanitize_answer_preserves_safe_code_while_redacting_secrets(
