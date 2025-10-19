@@ -1,6 +1,7 @@
 import os
 
 import django
+from typing import List
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -127,6 +128,95 @@ class GenerateAnswerTests(SimpleTestCase):
         self.assertIn("Title: Issue title", user_content)
         self.assertIn("Snippet:\nIssue title\nA concise update about the fix.", user_content)
         self.assertNotIn("n", mock_client.chat.completions.create.call_args.kwargs)
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        RAG_QUERY_REWRITE_MODEL="gpt-4o-mini",
+        RAG_QUERY_REWRITE_THRESHOLD=0.6,
+        RAG_LOW_CONFIDENCE_THRESHOLD=0.8,
+    )
+    def test_generate_answer_rewrites_query_when_low_confidence(self):
+        rewrite_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content='["better keywords"]')
+                )
+            ]
+        )
+        final_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="final answer referencing [confluence:CONF-2]"
+                    )
+                )
+            ]
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.side_effect = [rewrite_response, final_response]
+
+        initial_documents = [
+            {
+                "id": 11,
+                "source": "jira",
+                "source_id": "LOW-1",
+                "source_display": "LOW-1",
+                "content": "Unrelated status",
+                "metadata": {"title": "Unhelpful", "chunk_text": "Unrelated status"},
+                "combined_score": 0.05,
+                "similarity": 0.05,
+                "normalized_score": 1.0,
+            }
+        ]
+
+        rewrite_documents = [
+            {
+                "id": 22,
+                "source": "confluence",
+                "source_id": "CONF-2",
+                "source_display": "CONF-2",
+                "content": "Detailed launch checklist",
+                "metadata": {
+                    "title": "Launch Checklist",
+                    "chunk_text": "Detailed launch checklist",
+                },
+                "combined_score": 0.85,
+                "similarity": 0.5,
+                "normalized_score": 1.0,
+            }
+        ]
+
+        search_queries: List[str] = []
+
+        def _search_side_effect(company_id, chatbot_id, query, top_k, sources=None):
+            search_queries.append(query)
+            if query == "question":
+                return initial_documents
+            if query == "better keywords":
+                return rewrite_documents
+            return []
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents",
+            side_effect=_search_side_effect,
+        ), patch(
+            "chat.utils.rag.rerank_documents",
+            side_effect=lambda q, docs: list(docs),
+        ), patch(
+            "chat.utils.rag.record_retrieval_fallback_event"
+        ) as mock_record_event:
+            result = rag.generate_answer(company_id=1, chatbot_id=2, query="question")
+
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        self.assertGreaterEqual(search_queries.count("question"), 1)
+        self.assertIn("better keywords", search_queries)
+        self.assertEqual(result["answer"], "final answer referencing [confluence:CONF-2]")
+        self.assertEqual(result["sources"][0]["source_id"], "CONF-2")
+        reasoning = result["reasoning_trace"].get("query_rewrite")
+        self.assertIsNotNone(reasoning)
+        self.assertIn("better keywords", reasoning.get("rewrites", []))
+        mock_record_event.assert_called()
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_rate_limit_error(self):

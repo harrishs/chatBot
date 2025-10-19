@@ -159,6 +159,45 @@ class SearchDocumentsRankingTests(TestCase):
         self.assertEqual(results[0]["id"], self.jira_doc.id)
         self.assertTrue(all(result["source"] == "jira_issue" for result in results))
 
+    @override_settings(RAG_SEARCH_MIN_SCORE=0.8)
+    @patch("chat.utils.embeddings.record_retrieval_fallback_event")
+    @patch("chat.utils.embeddings.embed_text")
+    def test_low_score_triggers_search_fallback(
+        self,
+        mock_embed_text,
+        mock_record_event,
+    ):
+        mock_embed_text.return_value = self.primary_embedding
+
+        self.jira_doc.content = "Miscellaneous status update"
+        self.jira_doc.embedding = self._unit_vector(10)
+        self.jira_doc.save(update_fields=["content", "embedding"])
+
+        strong_doc = Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="confluence",
+            source_id="CONF-STRONG",
+            content="Comprehensive release plan with milestones",
+            embedding=self.primary_embedding,
+        )
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="release plan",
+            top_k=1,
+            sources=["jira_issue"],
+        )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0]["source_id"], strong_doc.source_id)
+        self.assertAlmostEqual(results[0]["normalized_score"], 1.0)
+        mock_record_event.assert_called_once()
+        details = mock_record_event.call_args.kwargs.get("details")
+        self.assertIsInstance(details, dict)
+        self.assertGreater(details.get("final_best", 0.0), details.get("primary_best", 0.0))
+
 
 class RerankDocumentsTests(TestCase):
     @override_settings(

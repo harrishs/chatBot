@@ -1,13 +1,24 @@
+import hashlib
+import json
+import logging
 import re
-from collections import Counter
+from collections import Counter, OrderedDict
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from django.utils import timezone
 
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
-from chat.utils.embeddings import get_openai_client, rerank_documents, search_documents
+from chat.utils.embeddings import (
+    get_openai_client,
+    record_retrieval_fallback_event,
+    rerank_documents,
+    search_documents,
+)
+
+
+logger = logging.getLogger(__name__)
 from chat.models import JiraIssue
 
 
@@ -42,6 +53,10 @@ _REFUSAL_PHRASES = {
     "i can't assist",
 }
 _CITATION_TOKEN_PATTERN = re.compile(r"\[[A-Za-z0-9_.:-]+:[^\[\]]+\]")
+
+
+_QUERY_REWRITE_CACHE: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+_MAX_QUERY_REWRITE_CACHE_SIZE = 128
 
 
 def _redacted_secret_value(match: re.Match) -> str:
@@ -264,6 +279,7 @@ def _metadata_from_document(document: Dict) -> Dict:
         "lexical_score",
         "websearch_score",
         "trigram_score",
+        "normalized_score",
         "rerank_score",
     ):
         value = document.get(score_key)
@@ -407,6 +423,249 @@ def _extract_answer_citations(answer: str) -> List[str]:
         return []
 
     return _CITATION_TOKEN_PATTERN.findall(answer)
+
+
+def _rewrite_cache_key(company_id: int, chatbot_id: int, query: str) -> str:
+    source = f"{company_id}:{chatbot_id}:{query.strip().lower()}".encode("utf-8")
+    return hashlib.sha256(source).hexdigest()
+
+
+def _get_cached_rewrites(company_id: int, chatbot_id: int, query: str) -> Optional[List[str]]:
+    cache_key = _rewrite_cache_key(company_id, chatbot_id, query)
+    cached = _QUERY_REWRITE_CACHE.get(cache_key)
+    if not cached:
+        return None
+
+    cached["timestamp"] = timezone.now()
+    _QUERY_REWRITE_CACHE.move_to_end(cache_key)
+    return list(cached.get("rewrites", []))
+
+
+def _store_rewrites(
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    rewrites: Sequence[str],
+) -> None:
+    cache_key = _rewrite_cache_key(company_id, chatbot_id, query)
+    _QUERY_REWRITE_CACHE[cache_key] = {
+        "timestamp": timezone.now(),
+        "rewrites": list(rewrites),
+    }
+    while len(_QUERY_REWRITE_CACHE) > _MAX_QUERY_REWRITE_CACHE_SIZE:
+        _QUERY_REWRITE_CACHE.popitem(last=False)
+
+
+def _parse_rewrite_suggestions(
+    text: str, original_query: str, limit: int
+) -> List[str]:
+    if not text:
+        return []
+
+    suggestions: List[str] = []
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        for entry in parsed:
+            if isinstance(entry, str):
+                cleaned = entry.strip()
+                if cleaned and cleaned.lower() != original_query.lower():
+                    suggestions.append(cleaned)
+
+    if not suggestions:
+        for raw_line in text.splitlines():
+            cleaned_line = re.sub(r"^[\s\-\*\d\.)]+", "", raw_line).strip()
+            if cleaned_line and cleaned_line.lower() != original_query.lower():
+                suggestions.append(cleaned_line)
+
+    unique: List[str] = []
+    seen = set()
+    for suggestion in suggestions:
+        key = suggestion.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(suggestion)
+        if len(unique) >= limit:
+            break
+
+    return unique
+
+
+def _suggest_query_rewrites(
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    documents: Sequence[dict],
+    *,
+    max_suggestions: int = 3,
+) -> Tuple[List[str], bool]:
+    cached = _get_cached_rewrites(company_id, chatbot_id, query)
+    if cached:
+        return cached, True
+
+    model_name = getattr(settings, "RAG_QUERY_REWRITE_MODEL", "gpt-4o-mini").strip()
+    if not model_name:
+        return [], False
+
+    client = get_openai_client()
+
+    context_chunks: List[str] = []
+    for doc in list(documents)[:3]:
+        metadata = doc.get("metadata") or {}
+        title = metadata.get("title") or doc.get("source_display") or doc.get("source_id")
+        snippet = metadata.get("chunk_text") or doc.get("content") or ""
+        snippet = _truncate_text(_condense_whitespace(snippet), 220)
+        if title and snippet:
+            context_chunks.append(f"- {title}: {snippet}")
+        elif snippet:
+            context_chunks.append(f"- {snippet}")
+
+    user_lines = [
+        "The initial document search returned low-confidence matches.",
+        f"Original question: {query}",
+    ]
+    if context_chunks:
+        user_lines.append("Observed snippets:")
+        user_lines.extend(context_chunks)
+    user_lines.append(
+        "Propose alternative search queries using synonyms or specific terminology. "
+        "Respond with a JSON array of short strings."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You refine enterprise search queries. Provide concise alternative "
+                        "queries that could retrieve better matches."
+                    ),
+                },
+                {"role": "user", "content": "\n".join(user_lines)},
+            ],
+            temperature=0.2,
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning("Query rewrite request failed: %s", exc)
+        return [], False
+
+    choices = getattr(response, "choices", []) or []
+    message = getattr(choices[0], "message", None) if choices else None
+    text = getattr(message, "content", "") if message else ""
+
+    rewrites = _parse_rewrite_suggestions(text, query, max_suggestions)
+    if rewrites:
+        _store_rewrites(company_id, chatbot_id, query, rewrites)
+
+    return rewrites, False
+
+
+def _merge_document_lists(primary: Sequence[dict], additional: Sequence[dict]) -> List[dict]:
+    merged: Dict[Tuple[Optional[int], Optional[str]], Dict[str, object]] = {}
+
+    def _doc_key(doc: Dict) -> Tuple[Optional[int], Optional[str]]:
+        return (doc.get("id"), doc.get("source_id"))
+
+    for source_docs in (primary, additional):
+        for doc in source_docs:
+            key = _doc_key(doc)
+            candidate = dict(doc)
+            existing = merged.get(key)
+            if existing is None or candidate.get("combined_score", 0.0) > existing.get(
+                "combined_score", 0.0
+            ):
+                merged[key] = candidate
+
+    merged_list = list(merged.values())
+    merged_list.sort(
+        key=lambda item: (
+            -float(item.get("combined_score", 0.0)),
+            -float(item.get("lexical_score", 0.0)),
+            -float(item.get("similarity", 0.0)),
+            (item.get("id") or 0),
+        )
+    )
+
+    best_score = max((float(doc.get("combined_score", 0.0)) for doc in merged_list), default=0.0)
+    for doc in merged_list:
+        if best_score > 0:
+            doc["normalized_score"] = float(doc.get("combined_score", 0.0)) / best_score
+        else:
+            doc["normalized_score"] = 0.0
+
+    return merged_list
+
+
+def _maybe_expand_with_query_rewrites(
+    company_id: int,
+    chatbot_id: int,
+    query: str,
+    top_k: int,
+    documents: Sequence[dict],
+) -> Tuple[Sequence[dict], Optional[Dict[str, object]]]:
+    if not documents:
+        base_best = 0.0
+    else:
+        base_best = max((float(doc.get("combined_score", 0.0)) for doc in documents), default=0.0)
+
+    max_suggestions = int(getattr(settings, "RAG_QUERY_REWRITE_SUGGESTIONS", 3)) or 3
+    rewrites, from_cache = _suggest_query_rewrites(
+        company_id,
+        chatbot_id,
+        query,
+        documents,
+        max_suggestions=max_suggestions,
+    )
+
+    if not rewrites:
+        return documents, None
+
+    expanded_docs: List[dict] = []
+    for rewrite in rewrites:
+        rewrite_results = search_documents(
+            company_id=company_id,
+            chatbot_id=chatbot_id,
+            query=rewrite,
+            top_k=max(top_k, len(documents) or top_k),
+        )
+        for doc in rewrite_results:
+            candidate = dict(doc)
+            candidate.setdefault("query_rewrite", rewrite)
+            expanded_docs.append(candidate)
+
+    combined_documents = _merge_document_lists(documents, expanded_docs)
+    final_best = max(
+        (float(doc.get("combined_score", 0.0)) for doc in combined_documents),
+        default=0.0,
+    )
+
+    record_retrieval_fallback_event(
+        event_type="query_rewrite",
+        company_id=company_id,
+        chatbot_id=chatbot_id,
+        query=query,
+        improved=final_best > base_best,
+        details={
+            "rewrites": rewrites,
+            "from_cache": from_cache,
+            "base_best": base_best,
+            "final_best": final_best,
+        },
+    )
+
+    return combined_documents, {
+        "rewrites": rewrites,
+        "from_cache": from_cache,
+        "base_best": base_best,
+        "final_best": final_best,
+    }
 
 
 def _compute_retrieval_confidence(documents: Sequence[dict]) -> float:
@@ -768,10 +1027,30 @@ def generate_answer(
         raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
 
     # 1. Retrieve context
-    documents = search_documents(company_id, chatbot_id, query, top_k)
+    documents = list(search_documents(company_id, chatbot_id, query, top_k))
+
+    rewrite_threshold = float(
+        getattr(
+            settings,
+            "RAG_QUERY_REWRITE_THRESHOLD",
+            getattr(settings, "RAG_LOW_CONFIDENCE_THRESHOLD", _LOW_CONFIDENCE_THRESHOLD),
+        )
+    )
+    preliminary_confidence = _compute_retrieval_confidence(documents)
+    rewrite_details = None
+    if preliminary_confidence < rewrite_threshold:
+        expanded_documents, rewrite_details = _maybe_expand_with_query_rewrites(
+            company_id,
+            chatbot_id,
+            query,
+            top_k,
+            documents,
+        )
+        documents = list(expanded_documents)
+
     documents = rerank_documents(query, documents)
     retrieval_confidence = _compute_retrieval_confidence(documents)
-    threshold = getattr(settings, "RAG_LOW_CONFIDENCE_THRESHOLD", _LOW_CONFIDENCE_THRESHOLD)
+    threshold = float(getattr(settings, "RAG_LOW_CONFIDENCE_THRESHOLD", _LOW_CONFIDENCE_THRESHOLD))
     requested_drafts = 1
     if retrieval_confidence < threshold:
         requested_drafts = getattr(
@@ -887,6 +1166,9 @@ def generate_answer(
         "draft_scores": [draft["score"] for draft in drafts],
         "evaluation_method": "heuristic_citation_scoring",
     }
+
+    if rewrite_details:
+        reasoning_trace["query_rewrite"] = rewrite_details
 
     return {
         "answer": best_draft["answer"],
