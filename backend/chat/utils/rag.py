@@ -11,6 +11,7 @@ from django.utils import timezone
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
 from chat.utils.embeddings import (
+    embed_text,
     get_openai_client,
     record_retrieval_fallback_event,
     rerank_documents,
@@ -91,6 +92,84 @@ _CITATION_TOKEN_PATTERN = re.compile(r"\[[A-Za-z0-9_.:-]+:[^\[\]]+\]")
 
 _QUERY_REWRITE_CACHE: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
 _MAX_QUERY_REWRITE_CACHE_SIZE = 128
+
+
+def _plan_retrieval_sources(
+    query: str, history: Optional[List[Dict[str, str]]] = None
+) -> List[List[str]]:
+    """Return prioritized source groups based on ``query`` and optional ``history``."""
+
+    if not query and not history:
+        return []
+
+    recent_user_messages: List[str] = []
+    if history:
+        for turn in history[-3:]:
+            user_message = (turn.get("user") or "").strip()
+            if user_message:
+                recent_user_messages.append(user_message)
+
+    combined_text = " ".join(
+        part for part in ([query] + recent_user_messages) if part
+    )
+    normalized = combined_text.lower()
+
+    source_plan: List[List[str]] = []
+
+    def _append_plan(sources: Sequence[str]) -> None:
+        normalized_sources = [source for source in sources if source]
+        if not normalized_sources:
+            return
+        if normalized_sources not in source_plan:
+            source_plan.append(list(normalized_sources))
+
+    jira_keywords = {
+        "jira",
+        "ticket",
+        "tickets",
+        "epic",
+        "epics",
+        "story",
+        "stories",
+        "sprint",
+        "backlog",
+    }
+
+    confluence_keywords = {
+        "confluence",
+        "wiki",
+        "knowledge base",
+        "kb article",
+        "runbook",
+        "playbook",
+    }
+
+    github_keywords = {
+        "github",
+        "pull request",
+        "merge request",
+        "commit",
+        "branch",
+        "repository",
+        "repo",
+        "code review",
+    }
+
+    jira_key_pattern = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+
+    if normalized:
+        if any(keyword in normalized for keyword in jira_keywords) or jira_key_pattern.search(
+            combined_text
+        ):
+            _append_plan(["jira_issue", "jira_comment"])
+
+        if any(keyword in normalized for keyword in confluence_keywords):
+            _append_plan(["confluence"])
+
+        if any(keyword in normalized for keyword in github_keywords):
+            _append_plan(["github"])
+
+    return source_plan
 
 
 def _redacted_secret_value(match: re.Match) -> str:
@@ -1201,7 +1280,63 @@ def generate_answer(
         raise ValueError("OPENAI_API_KEY is not set in environment or settings.py")
 
     # 1. Retrieve context
-    documents = list(search_documents(company_id, chatbot_id, query, top_k))
+    source_plan = _plan_retrieval_sources(query, history)
+    pooled_documents: List[dict] = []
+    retrieval_attempts: List[Dict[str, Any]] = []
+
+    query_embedding = embed_text(query)
+
+    for source_group in source_plan:
+        group_documents = list(
+            search_documents(
+                company_id,
+                chatbot_id,
+                query,
+                top_k,
+                sources=source_group,
+                query_embedding=query_embedding,
+            )
+        )
+        pooled_documents = _merge_document_lists(pooled_documents, group_documents)
+        retrieval_attempts.append(
+            {
+                "sources": list(source_group),
+                "result_count": len(group_documents),
+                "best_score": max(
+                    (
+                        float(doc.get("combined_score", 0.0))
+                        for doc in group_documents
+                    ),
+                    default=0.0,
+                ),
+            }
+        )
+
+    fallback_documents = list(
+        search_documents(
+            company_id,
+            chatbot_id,
+            query,
+            top_k,
+            query_embedding=query_embedding,
+        )
+    )
+    pooled_documents = _merge_document_lists(pooled_documents, fallback_documents)
+    retrieval_attempts.append(
+        {
+            "sources": None,
+            "result_count": len(fallback_documents),
+            "best_score": max(
+                (
+                    float(doc.get("combined_score", 0.0))
+                    for doc in fallback_documents
+                ),
+                default=0.0,
+            ),
+        }
+    )
+
+    documents = pooled_documents
 
     rewrite_threshold = float(
         getattr(
@@ -1387,6 +1522,9 @@ def generate_answer(
         reasoning_trace["judge_error"] = judge_error
     if evaluation_method != "llm_judge":
         reasoning_trace["heuristic_selected_index"] = heuristic_index
+
+    reasoning_trace["retrieval_source_plan"] = [list(group) for group in source_plan]
+    reasoning_trace["retrieval_source_attempts"] = retrieval_attempts
 
     if rewrite_details:
         reasoning_trace["query_rewrite"] = rewrite_details

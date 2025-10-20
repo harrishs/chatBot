@@ -764,11 +764,16 @@ def search_documents(
     query: str,
     top_k: int = 5,
     sources: Optional[Iterable[str]] = None,
+    *,
+    query_embedding: Optional[Sequence[float]] = None,
+    query_tokens: Optional[Sequence[str]] = None,
 ):
     """Search for relevant documents using vector and lexical signals with fallbacks."""
 
-    query_embedding = embed_text(query)
-    query_tokens = _tokenize_query(query)
+    if query_embedding is None:
+        query_embedding = embed_text(query)
+    if query_tokens is None:
+        query_tokens = _tokenize_query(query)
 
     try:
         top_k = int(top_k)

@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from typing import Dict, List, Tuple
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ django.setup()
 from django.test import TestCase, override_settings  # noqa: E402
 
 from chat.models import ChatBotInstance, Company, Document  # noqa: E402
+from chat.utils import rag  # noqa: E402
 from chat.utils.embeddings import rerank_documents, save_document, search_documents  # noqa: E402
 
 
@@ -62,6 +64,18 @@ class SearchDocumentsRankingTests(TestCase):
         vector = [0.0] * 1536
         vector[index] = 1.0
         return vector
+
+    def _chat_client(self, response_text: str = "Acknowledged"):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=response_text))]
+        )
+
+        def _create(**kwargs):
+            return response
+
+        return SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+        )
 
     @patch("chat.utils.embeddings.embed_text")
     def test_combined_scoring_prefers_lexical_matches(self, mock_embed_text):
@@ -197,6 +211,118 @@ class SearchDocumentsRankingTests(TestCase):
         details = mock_record_event.call_args.kwargs.get("details")
         self.assertIsInstance(details, dict)
         self.assertGreater(details.get("final_best", 0.0), details.get("primary_best", 0.0))
+
+    @override_settings(OPENAI_API_KEY="test-key", MIGRATION_MODULES={"chat": None})
+    @patch("chat.utils.rag.rerank_documents", side_effect=lambda query, docs: docs)
+    @patch("chat.utils.rag.search_documents")
+    @patch("chat.utils.rag.get_openai_client")
+    def test_jira_specific_question_limits_to_jira_sources(
+        self,
+        mock_get_openai_client,
+        mock_search_documents,
+        mock_rerank_documents,
+    ):
+        mock_get_openai_client.return_value = self._chat_client(
+            "Status is up to date [jira:JIRA-1]"
+        )
+
+        jira_documents = [
+            {
+                "id": 101,
+                "source": "jira",
+                "source_id": "JIRA-1",
+                "source_display": "JIRA-1",
+                "combined_score": 0.92,
+                "similarity": 0.92,
+                "metadata": {"chunk_text": "Ticket status update."},
+            }
+        ]
+
+        mock_search_documents.side_effect = [jira_documents, jira_documents]
+
+        result = rag.generate_answer(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="What's the status of ticket JIRA-1?",
+        )
+
+        self.assertGreaterEqual(len(mock_search_documents.call_args_list), 2)
+        targeted_kwargs = mock_search_documents.call_args_list[0].kwargs
+        self.assertEqual(targeted_kwargs.get("sources"), ["jira_issue", "jira_comment"])
+        fallback_kwargs = mock_search_documents.call_args_list[-1].kwargs
+        self.assertIsNone(fallback_kwargs.get("sources"))
+
+        trace = result.get("reasoning_trace", {})
+        self.assertIn(["jira_issue", "jira_comment"], trace.get("retrieval_source_plan", []))
+        self.assertTrue(result["sources"])
+        self.assertTrue(all(entry["source"] == "jira" for entry in result["sources"]))
+
+    @override_settings(OPENAI_API_KEY="test-key", MIGRATION_MODULES={"chat": None})
+    @patch("chat.utils.rag.rerank_documents", side_effect=lambda query, docs: docs)
+    @patch("chat.utils.rag.search_documents")
+    @patch("chat.utils.rag.get_openai_client")
+    def test_mixed_question_considers_all_sources(
+        self,
+        mock_get_openai_client,
+        mock_search_documents,
+        mock_rerank_documents,
+    ):
+        mock_get_openai_client.return_value = self._chat_client(
+            "Here is what I found [jira:JIRA-1] [confluence:CONF-1]"
+        )
+
+        jira_documents = [
+            {
+                "id": 201,
+                "source": "jira",
+                "source_id": "JIRA-1",
+                "source_display": "JIRA-1",
+                "combined_score": 0.92,
+                "similarity": 0.92,
+                "metadata": {"chunk_text": "Ticket status update."},
+            }
+        ]
+        confluence_documents = [
+            {
+                "id": 202,
+                "source": "confluence",
+                "source_id": "CONF-1",
+                "source_display": "CONF-1",
+                "combined_score": 0.88,
+                "similarity": 0.88,
+                "metadata": {"chunk_text": "Release plan summary."},
+            }
+        ]
+
+        mock_search_documents.side_effect = [
+            jira_documents,
+            confluence_documents,
+            jira_documents + confluence_documents,
+        ]
+
+        result = rag.generate_answer(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="Compare Jira ticket JIRA-1 with the Confluence release page.",
+        )
+
+        self.assertEqual(len(mock_search_documents.call_args_list), 3)
+        first_kwargs = mock_search_documents.call_args_list[0].kwargs
+        second_kwargs = mock_search_documents.call_args_list[1].kwargs
+        fallback_kwargs = mock_search_documents.call_args_list[2].kwargs
+
+        self.assertEqual(first_kwargs.get("sources"), ["jira_issue", "jira_comment"])
+        self.assertEqual(second_kwargs.get("sources"), ["confluence"])
+        self.assertIsNone(fallback_kwargs.get("sources"))
+
+        trace = result.get("reasoning_trace", {})
+        plan = trace.get("retrieval_source_plan", [])
+        self.assertIn(["jira_issue", "jira_comment"], plan)
+        self.assertIn(["confluence"], plan)
+
+        sources = {entry["source"] for entry in result["sources"]}
+        self.assertIn("jira", sources)
+        self.assertIn("confluence", sources)
 
 
 class RerankDocumentsTests(TestCase):
