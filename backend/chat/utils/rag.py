@@ -4,7 +4,7 @@ import logging
 import re
 from collections import Counter, OrderedDict
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from django.utils import timezone
 
@@ -438,13 +438,18 @@ def _metadata_from_document(document: Dict) -> Dict:
     return metadata
 
 
-def _format_metadata_for_prompt(metadata: Dict) -> str:
-    """Format metadata for inclusion in the LLM prompt."""
+def _metadata_citation_label(metadata: Dict[str, Any]) -> str:
+    """Return a standardized citation label for ``metadata``."""
 
     label_identifier = metadata.get("source_display") or metadata.get("source_id") or "unknown"
     label_source = metadata.get("source") or "source"
+    return f"[{label_source}:{label_identifier}]"
 
-    lines: List[str] = [f"[{label_source}:{label_identifier}]"]
+
+def _format_metadata_for_prompt(metadata: Dict) -> str:
+    """Format metadata for inclusion in the LLM prompt."""
+
+    lines: List[str] = [_metadata_citation_label(metadata)]
 
     detail_lines: List[str] = []
 
@@ -512,6 +517,79 @@ def _format_metadata_for_prompt(metadata: Dict) -> str:
         lines.append(snippet)
 
     return "\n".join(lines)
+
+
+def _summarize_metadata_entries(
+    metadata_entries: Sequence[Dict[str, Any]],
+) -> List[str]:
+    """Return compact research notes derived from ``metadata_entries``.
+
+    The routine applies lightweight heuristics to surface the key claim for each
+    entry while preserving the original citation label.
+    """
+
+    notes: List[str] = []
+    seen_labels: Set[str] = set()
+
+    for metadata in metadata_entries:
+        citation_label = _metadata_citation_label(metadata)
+
+        if citation_label in seen_labels:
+            continue
+
+        seen_labels.add(citation_label)
+
+        title = (metadata.get("title") or "").strip()
+        summary = (metadata.get("summary") or "").strip()
+        snippet = (
+            metadata.get("snippet")
+            or metadata.get("chunk_text")
+            or metadata.get("excerpt")
+            or ""
+        ).strip()
+
+        def _normalize(text: str) -> str:
+            if not text:
+                return ""
+            # Remove fenced code indicators and compress whitespace.
+            text = re.sub(r"```+", "", text)
+            text = re.sub(r"`([^`]+)`", r"\1", text)
+            text = re.sub(r"\s+", " ", text)
+            return text.strip()
+
+        candidate = _normalize(summary)
+
+        if not candidate:
+            candidate = _normalize(snippet)
+
+        if not candidate and title:
+            candidate = title
+
+        keywords = metadata.get("keywords")
+        if not candidate and keywords:
+            candidate = f"Keywords: {keywords}"
+
+        status = metadata.get("status")
+        resolution = metadata.get("resolution")
+        if metadata.get("source") == "jira" and status and not candidate:
+            status_line = f"Status {status}".strip()
+            if resolution:
+                status_line = f"Status {status}, resolution {resolution}"
+            candidate = status_line
+
+        if not candidate:
+            candidate = "No additional summary available."
+
+        if title and candidate != title and not candidate.lower().startswith(title.lower()):
+            note_body = f"{title}: {candidate}"
+        else:
+            note_body = candidate
+
+        note_body = _truncate_text(note_body, 240)
+
+        notes.append(f"- {note_body} {citation_label}")
+
+    return notes
 
 
 def _collect_citations(metadata_list: List[Dict]) -> List[str]:
@@ -866,8 +944,12 @@ def _judge_answer_drafts(
 
     client = get_openai_client()
 
-    context_sections = [_format_metadata_for_prompt(entry) for entry in metadata_entries]
-    context_text = "\n\n".join(context_sections) if context_sections else "No supporting metadata was retrieved."
+    research_notes = _summarize_metadata_entries(metadata_entries)
+    context_text = (
+        "\n".join(research_notes)
+        if research_notes
+        else "No supporting metadata was retrieved."
+    )
 
     draft_descriptions: List[str] = []
     for draft in drafts:
@@ -889,7 +971,7 @@ def _judge_answer_drafts(
 
     judge_prompt = (
         f"Question:\n{question}\n\n"
-        f"Metadata context:\n{context_text}\n\n"
+        f"Metadata research notes:\n{context_text}\n\n"
         f"Candidate drafts:\n\n" + "\n\n".join(draft_descriptions)
     )
 
@@ -1375,11 +1457,11 @@ def generate_answer(
             requested_drafts = 2
     low_confidence_mode = requested_drafts > 1
     metadata_entries = [_metadata_from_document(doc) for doc in documents]
+    research_notes = _summarize_metadata_entries(metadata_entries)
 
     # 2. Build context string that only contains safe metadata
-    if metadata_entries:
-        context_sections = [_format_metadata_for_prompt(metadata) for metadata in metadata_entries]
-        context_text = "\n\n".join(context_sections)
+    if research_notes:
+        context_text = "\n".join(research_notes)
     else:
         context_text = "No supporting metadata was retrieved."
 
@@ -1401,7 +1483,7 @@ def generate_answer(
     )
     user_prompt = (
         f"{history_section}"
-        "Metadata entries (each includes contextual fields followed by a Snippet with the actual text excerpt):\n"
+        "Research notes derived from the retrieved metadata sources:\n"
         f"{context_text}\n\n"
         f"Question: {query}\n\n"
         "Respond concisely, cite the sources using their [source:identifier] labels, and only include "
@@ -1525,6 +1607,7 @@ def generate_answer(
 
     reasoning_trace["retrieval_source_plan"] = [list(group) for group in source_plan]
     reasoning_trace["retrieval_source_attempts"] = retrieval_attempts
+    reasoning_trace["research_notes"] = research_notes
 
     if rewrite_details:
         reasoning_trace["query_rewrite"] = rewrite_details
