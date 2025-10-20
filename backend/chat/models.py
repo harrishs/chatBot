@@ -309,6 +309,7 @@ class Document(models.Model):
         ('jira_comment', 'Jira Comment'),
         ('confluence', 'Confluence'),
         ('github', 'GitHub'),
+        ('feedback', 'Feedback'),
     ]
 
     company = models.ForeignKey("chat.Company", on_delete=models.CASCADE)
