@@ -623,10 +623,26 @@ def chat_with_bot(request, chatbot_id):
     chatbot = get_object_or_404(
         ChatBotInstance, id=chatbot_id, company=request.user.company
     )
-    query = request.data.get("query")
+    raw_query = request.data.get("query")
     company_id = request.user.company_id
-    if not query:
+    if not raw_query:
         return Response({"error": "Missing 'query' in request body"}, status=status.HTTP_400_BAD_REQUEST)
+
+    query = str(raw_query).strip()
+
+    if query.startswith('/feedback'):
+        comment_payload = request.data.get('comment')
+        comment_from_query = query[len('/feedback'):].strip()
+        comment = (comment_payload or '').strip() or comment_from_query
+
+        if not comment:
+            raise ValidationError({'comment': ["Feedback comment cannot be empty."]})
+
+        serializer = ChatFeedbackSerializer(data={'comment': comment})
+        serializer.is_valid(raise_exception=True)
+        serializer.save(chatBot=chatbot)
+
+        return Response({'message': 'Thanks for your feedback!'}, status=status.HTTP_200_OK)
 
     top_k_value = request.data.get("top_k", DEFAULT_CHAT_TOP_K)
     try:

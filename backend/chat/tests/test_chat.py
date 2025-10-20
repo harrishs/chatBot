@@ -15,6 +15,7 @@ from rest_framework.test import APIClient
 
 from chat.models import (
     ChatBotInstance,
+    ChatFeedback,
     Company,
     Document,
     Credential,
@@ -673,6 +674,52 @@ class ChatbotAccessAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         mock_generate_answer.assert_not_called()
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_feedback_command_creates_comment(self, mock_generate_answer):
+        response = self.client.post(
+            self.chat_url,
+            {"query": "/feedback The bot is fantastic"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"message": "Thanks for your feedback!"})
+        mock_generate_answer.assert_not_called()
+
+        feedback = ChatFeedback.objects.get()
+        self.assertEqual(feedback.chatBot, self.chatbot)
+        self.assertEqual(feedback.comment, "The bot is fantastic")
+        self.assertEqual(feedback.question, "")
+        self.assertEqual(feedback.answer, "")
+        self.assertIsNone(feedback.is_helpful)
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_feedback_command_respects_comment_field(self, mock_generate_answer):
+        response = self.client.post(
+            self.chat_url,
+            {"query": "/feedback", "comment": "Needs to cite more sources"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_generate_answer.assert_not_called()
+
+        feedback = ChatFeedback.objects.get()
+        self.assertEqual(feedback.comment, "Needs to cite more sources")
+
+    @patch("chat.views.generate_answer")
+    def test_chat_with_bot_feedback_command_requires_comment(self, mock_generate_answer):
+        response = self.client.post(
+            self.chat_url,
+            {"query": "/feedback   "},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data, {"comment": ["Feedback comment cannot be empty."]})
+        mock_generate_answer.assert_not_called()
+        self.assertFalse(ChatFeedback.objects.exists())
 
 
 class SyncCredentialPermissionTests(TestCase):

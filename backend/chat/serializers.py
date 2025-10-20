@@ -72,6 +72,29 @@ class ChatBotInstanceSerializer(serializers.ModelSerializer):
         read_only_fields = ('company',)
 
 class ChatFeedbackSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        comment = (attrs.get('comment') or '').strip()
+        question = (attrs.get('question') or '').strip()
+        answer = (attrs.get('answer') or '').strip()
+        is_helpful = attrs.get('is_helpful', None)
+
+        if comment:
+            attrs['comment'] = comment
+
+        if question:
+            attrs['question'] = question
+
+        if answer:
+            attrs['answer'] = answer
+
+        has_structured_feedback = bool(question and answer and is_helpful is not None)
+        if not comment and not has_structured_feedback:
+            raise serializers.ValidationError(
+                'Provide a comment or complete the question, answer, and is_helpful fields.'
+            )
+
+        return super().validate(attrs)
+
     class Meta:
         model = ChatFeedback
         fields = '__all__'
