@@ -18,20 +18,53 @@ function ChatBotPage({ apiClient = api }) {
                         query: trimmedQuery,
                 });
 
+                const requestId = `${Date.now()}-${Math.random()
+                        .toString(36)
+                        .slice(2)}`;
+
                 setMessages((prev) => [
                         ...prev,
-                        { role: "user", content: trimmedQuery },
+                        { role: "user", content: trimmedQuery, requestId },
+                        {
+                                role: "assistant",
+                                content: "",
+                                requestId,
+                                pending: true,
+                        },
                 ]);
                 setQuery("");
 
                 try {
                         const res = await apiClient.post(url, body);
-                        setMessages((prev) => [
-                                ...prev,
-                                { role: "assistant", content: res.data.answer },
-                        ]);
+                        const answer = res?.data?.answer ?? "";
+                        setMessages((prev) =>
+                                prev.map((message) =>
+                                        message.role === "assistant" &&
+                                        message.requestId === requestId
+                                                ? {
+                                                          role: "assistant",
+                                                          content: answer,
+                                                          requestId,
+                                                  }
+                                                : message,
+                                ),
+                        );
                 } catch (err) {
                         console.error("Chat error:", err);
+                        setMessages((prev) =>
+                                prev.map((message) =>
+                                        message.role === "assistant" &&
+                                        message.requestId === requestId
+                                                ? {
+                                                          role: "assistant",
+                                                          content:
+                                                                  "Unable to retrieve a response. Please try again.",
+                                                          requestId,
+                                                          error: true,
+                                                  }
+                                                : message,
+                                ),
+                        );
                 }
         };
 
