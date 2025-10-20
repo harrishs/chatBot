@@ -194,14 +194,24 @@ class ConfluenceSync(SyncStatusMixin):
     
 
 class ChatFeedback(models.Model):
-    chatBot = models.ForeignKey(ChatBotInstance, on_delete=models.CASCADE, related_name='feedbacks')
-    question = models.TextField()
-    answer = models.TextField()
-    is_helpful = models.BooleanField()
+    chatBot = models.ForeignKey(
+        ChatBotInstance,
+        on_delete=models.CASCADE,
+        related_name='feedbacks',
+    )
+    question = models.TextField(blank=True, default="")
+    answer = models.TextField(blank=True, default="")
+    is_helpful = models.BooleanField(null=True, blank=True)
+    comment = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Feedback for {self.chatBot.name} ({self.chatBot.company.name}) - Helpful: {self.is_helpful}"
+        label = (
+            f"Helpful: {self.is_helpful}"
+            if self.is_helpful is not None
+            else (self.comment[:30] + ("..." if len(self.comment) > 30 else ""))
+        )
+        return f"Feedback for {self.chatBot.name} ({self.chatBot.company.name}) - {label}"
 
 class JiraIssue(models.Model):
     sync = models.ForeignKey(JiraSync, on_delete=models.CASCADE, related_name='issues')
