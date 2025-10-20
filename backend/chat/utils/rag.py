@@ -11,6 +11,7 @@ from django.utils import timezone
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from django.conf import settings
 from chat.utils.embeddings import (
+    embed_text,
     get_openai_client,
     record_retrieval_fallback_event,
     rerank_documents,
@@ -1283,6 +1284,8 @@ def generate_answer(
     pooled_documents: List[dict] = []
     retrieval_attempts: List[Dict[str, Any]] = []
 
+    query_embedding = embed_text(query)
+
     for source_group in source_plan:
         group_documents = list(
             search_documents(
@@ -1291,6 +1294,7 @@ def generate_answer(
                 query,
                 top_k,
                 sources=source_group,
+                query_embedding=query_embedding,
             )
         )
         pooled_documents = _merge_document_lists(pooled_documents, group_documents)
@@ -1308,7 +1312,15 @@ def generate_answer(
             }
         )
 
-    fallback_documents = list(search_documents(company_id, chatbot_id, query, top_k))
+    fallback_documents = list(
+        search_documents(
+            company_id,
+            chatbot_id,
+            query,
+            top_k,
+            query_embedding=query_embedding,
+        )
+    )
     pooled_documents = _merge_document_lists(pooled_documents, fallback_documents)
     retrieval_attempts.append(
         {
