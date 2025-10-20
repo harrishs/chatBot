@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -27,11 +28,31 @@ class DummyChatClient:
 
 @override_settings(OPENAI_API_KEY="test-key", MIGRATION_MODULES={"chat": None})
 class GenerateAnswerPromptTests(TestCase):
-    def _run_generate_answer(self, documents, response_text="Mock answer"):
+    def _run_generate_answer(
+        self, documents, response_text="Mock answer", research_notes=None
+    ):
         client = DummyChatClient(response_text)
-        with patch("chat.utils.rag.get_openai_client", return_value=client), patch(
-            "chat.utils.rag.search_documents", return_value=documents
-        ), patch("chat.utils.rag.rerank_documents", side_effect=lambda query, docs: docs):
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("chat.utils.rag.get_openai_client", return_value=client)
+            )
+            stack.enter_context(
+                patch("chat.utils.rag.search_documents", return_value=documents)
+            )
+            stack.enter_context(patch("chat.utils.rag.embed_text", return_value=[0.1]))
+            stack.enter_context(
+                patch(
+                    "chat.utils.rag.rerank_documents",
+                    side_effect=lambda query, docs: docs,
+                )
+            )
+            if research_notes is not None:
+                stack.enter_context(
+                    patch(
+                        "chat.utils.rag._summarize_metadata_entries",
+                        return_value=research_notes,
+                    )
+                )
             result = rag.generate_answer(
                 company_id=1,
                 chatbot_id=1,
@@ -43,7 +64,7 @@ class GenerateAnswerPromptTests(TestCase):
         user_prompt = messages[1]["content"]
         return result, system_prompt, user_prompt
 
-    def test_prompt_includes_git_snippet_and_path_metadata(self):
+    def test_prompt_uses_research_notes_for_git_metadata(self):
         snippet = "```python\ndef example():\n    return True\n```"
         documents = [
             {
@@ -68,23 +89,26 @@ class GenerateAnswerPromptTests(TestCase):
         ]
 
         response_text = "Here is what I found [git:repo/backend/app.py]"
+        research_notes = [
+            "- Example module ensures truthy return [git:repo/backend/app.py]"
+        ]
         result, system_prompt, user_prompt = self._run_generate_answer(
-            documents, response_text
+            documents, response_text, research_notes=research_notes
         )
 
-        self.assertIn("[git:repo/backend/app.py]", user_prompt)
-        self.assertIn("- Title: Example Module", user_prompt)
-        self.assertIn("- Path: repo/backend/app.py", user_prompt)
-        self.assertIn("- Section: Usage", user_prompt)
-        self.assertIn(f"Snippet:\n{snippet}", user_prompt)
+        self.assertIn("Research notes derived", user_prompt)
+        self.assertIn(research_notes[0], user_prompt)
+        self.assertNotIn("Snippet:", user_prompt)
+        self.assertNotIn(snippet, user_prompt)
         self.assertIn("short, sanitized code excerpts", system_prompt)
         self.assertIn("short, sanitized code excerpts", user_prompt)
 
         source_metadata = result["sources"][0]
         self.assertEqual(source_metadata["snippet"], snippet)
         self.assertEqual(source_metadata["chunk_text"], snippet)
+        self.assertEqual(result["reasoning_trace"]["research_notes"], research_notes)
 
-    def test_prompt_includes_confluence_snippet_and_space_metadata(self):
+    def test_prompt_uses_research_notes_for_confluence_metadata(self):
         snippet = "This playbook explains the deployment process."
         documents = [
             {
@@ -109,14 +133,18 @@ class GenerateAnswerPromptTests(TestCase):
         ]
 
         response_text = "Consult the documentation [confluence:ENG-123]"
-        result, _, user_prompt = self._run_generate_answer(documents, response_text)
+        research_notes = [
+            "- Release playbook describes deployment procedure [confluence:ENG-123]"
+        ]
+        result, _, user_prompt = self._run_generate_answer(
+            documents, response_text, research_notes=research_notes
+        )
 
-        self.assertIn("[confluence:ENG-123]", user_prompt)
-        self.assertIn("- Title: Release Playbook", user_prompt)
-        self.assertIn("- Space: ENG", user_prompt)
-        self.assertIn("- Chunk: 2 of 3", user_prompt)
-        self.assertIn(f"Snippet:\n{snippet}", user_prompt)
+        self.assertIn(research_notes[0], user_prompt)
+        self.assertNotIn("Snippet:", user_prompt)
+        self.assertNotIn(snippet, user_prompt)
 
         source_metadata = result["sources"][0]
         self.assertEqual(source_metadata["snippet"], snippet)
         self.assertEqual(source_metadata["chunk_text"], snippet)
+        self.assertEqual(result["reasoning_trace"]["research_notes"], research_notes)
