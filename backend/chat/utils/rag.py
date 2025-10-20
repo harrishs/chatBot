@@ -1043,6 +1043,103 @@ def _judge_answer_drafts(
     return result
 
 
+def _consensus_from_drafts(
+    question: str,
+    metadata_entries: Sequence[Dict[str, Any]],
+    drafts: Sequence[Dict[str, Any]],
+    *,
+    judge_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Derive a consensus-backed draft selection or fall back to an LLM judge."""
+
+    if len(drafts) < 2:
+        return None
+
+    citation_sets: List[Tuple[Dict[str, Any], Set[str]]] = []
+    for draft in drafts:
+        citations = {
+            citation
+            for citation in draft.get("citations") or []
+            if isinstance(citation, str) and citation
+        }
+        if citations:
+            citation_sets.append((draft, citations))
+
+    consensus_citations: Set[str] = set()
+    if citation_sets:
+        frequency: Counter[str] = Counter()
+        for _, citations in citation_sets:
+            frequency.update(citations)
+
+        if frequency:
+            majority_threshold = max(2, (len(drafts) // 2) + 1)
+            consensus_citations = {
+                citation for citation, count in frequency.items() if count >= majority_threshold
+            }
+
+            if not consensus_citations:
+                top_frequency = max(frequency.values())
+                if top_frequency > 1:
+                    consensus_citations = {
+                        citation
+                        for citation, count in frequency.items()
+                        if count == top_frequency
+                    }
+
+    if consensus_citations:
+        best_candidate: Optional[Dict[str, Any]] = None
+        best_overlap = -1
+        best_score = float("-inf")
+
+        for draft, citations in citation_sets:
+            overlap = len(citations & consensus_citations)
+            if overlap <= 0:
+                continue
+
+            score = float(draft.get("score", 0.0) or 0.0)
+            if overlap > best_overlap or (overlap == best_overlap and score > best_score):
+                best_candidate = draft
+                best_overlap = overlap
+                best_score = score
+
+        if best_candidate is not None:
+            return {
+                "index": best_candidate.get("index"),
+                "method": "consensus_citations",
+                "consensus_citations": sorted(consensus_citations),
+            }
+
+    if judge_fn is None:
+        return None
+
+    try:
+        judge_details = judge_fn()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning("Draft judge failed during consensus: %s", exc, exc_info=True)
+        return {"method": "heuristic_citation_scoring", "judge_error": str(exc)}
+
+    if not judge_details:
+        return None
+
+    top_entry = next(
+        (
+            entry
+            for entry in judge_details.get("rankings", [])
+            if isinstance(entry, dict) and isinstance(entry.get("index"), int)
+        ),
+        None,
+    )
+
+    if top_entry is None:
+        return {"method": "llm_judge", "judge": judge_details}
+
+    return {
+        "index": top_entry.get("index"),
+        "method": "llm_judge",
+        "judge": judge_details,
+    }
+
+
 def _redact_sensitive_tokens(value: str) -> str:
     """Redact known sensitive token patterns within ``value``."""
 
@@ -1442,7 +1539,17 @@ def generate_answer(
     documents = rerank_documents(query, documents)
     retrieval_confidence = _compute_retrieval_confidence(documents)
     threshold = float(getattr(settings, "RAG_LOW_CONFIDENCE_THRESHOLD", _LOW_CONFIDENCE_THRESHOLD))
-    requested_drafts = 1
+
+    minimum_drafts = getattr(settings, "RAG_MIN_DRAFT_COUNT", 1)
+    try:
+        minimum_drafts = int(minimum_drafts)
+    except (TypeError, ValueError):
+        minimum_drafts = 1
+    if minimum_drafts < 1:
+        minimum_drafts = 1
+
+    requested_drafts = minimum_drafts
+    low_confidence_mode = False
     if retrieval_confidence < threshold:
         requested_drafts = getattr(
             settings,
@@ -1455,7 +1562,9 @@ def generate_answer(
             requested_drafts = _LOW_CONFIDENCE_DRAFT_COUNT
         if requested_drafts < 2:
             requested_drafts = 2
-    low_confidence_mode = requested_drafts > 1
+        low_confidence_mode = True
+
+    requested_drafts = max(minimum_drafts, requested_drafts)
     metadata_entries = [_metadata_from_document(doc) for doc in documents]
     research_notes = _summarize_metadata_entries(metadata_entries)
 
@@ -1529,6 +1638,7 @@ def generate_answer(
             {
                 "index": idx,
                 "answer": sanitized_text,
+                "raw_answer": raw_text,
                 "score": evaluation["score"],
                 "citations": evaluation["valid_citations"],
                 "invalid_citations": evaluation["invalid_citations"],
@@ -1545,39 +1655,44 @@ def generate_answer(
 
     selected_index = heuristic_index
     evaluation_method = "heuristic_citation_scoring"
+    consensus_details: Optional[Dict[str, Any]] = None
     judge_details: Optional[Dict[str, Any]] = None
     judge_error: Optional[str] = None
 
     if len(drafts) > 1:
-        try:
-            judge_details = _judge_answer_drafts(query, metadata_entries, drafts)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            judge_error = str(exc)
-            logger.warning("Draft judge failed: %s", exc, exc_info=True)
-        else:
-            if judge_details and judge_details.get("rankings"):
-                top_entry = next(
-                    (
-                        entry
-                        for entry in judge_details["rankings"]
-                        if isinstance(entry.get("index"), int)
-                    ),
-                    None,
-                )
-                if top_entry is not None:
-                    candidate_index = top_entry["index"]
-                    if 0 <= candidate_index < len(drafts):
-                        selected_index = candidate_index
-                        evaluation_method = "llm_judge"
-                        for entry in judge_details["rankings"]:
-                            idx = entry.get("index")
-                            if isinstance(idx, int) and 0 <= idx < len(drafts):
-                                score = entry.get("score")
-                                if isinstance(score, (int, float)):
-                                    drafts[idx]["judge_score"] = float(score)
-                                feedback = entry.get("feedback")
-                                if isinstance(feedback, str) and feedback:
-                                    drafts[idx]["judge_feedback"] = feedback
+        consensus_details = _consensus_from_drafts(
+            query,
+            metadata_entries,
+            drafts,
+            judge_fn=lambda: _judge_answer_drafts(query, metadata_entries, drafts),
+        )
+
+        if consensus_details:
+            consensus_index = consensus_details.get("index")
+            method = consensus_details.get("method")
+            if (
+                isinstance(consensus_index, int)
+                and 0 <= consensus_index < len(drafts)
+                and method
+            ):
+                selected_index = consensus_index
+                evaluation_method = method
+
+            if consensus_details.get("judge"):
+                judge_details = consensus_details["judge"]
+            if consensus_details.get("judge_error"):
+                judge_error = consensus_details["judge_error"]
+
+        if judge_details and judge_details.get("rankings"):
+            for entry in judge_details["rankings"]:
+                idx = entry.get("index")
+                if isinstance(idx, int) and 0 <= idx < len(drafts):
+                    score = entry.get("score")
+                    if isinstance(score, (int, float)):
+                        drafts[idx]["judge_score"] = float(score)
+                    feedback = entry.get("feedback")
+                    if isinstance(feedback, str) and feedback:
+                        drafts[idx]["judge_feedback"] = feedback
 
     best_draft = drafts[selected_index]
 
@@ -1598,6 +1713,12 @@ def generate_answer(
         "draft_scores": [draft["score"] for draft in drafts],
         "evaluation_method": evaluation_method,
     }
+    if consensus_details:
+        reasoning_trace["consensus"] = {
+            key: value
+            for key, value in consensus_details.items()
+            if key not in {"judge", "judge_error"}
+        }
     if judge_details:
         reasoning_trace["judge"] = judge_details
     if judge_error:

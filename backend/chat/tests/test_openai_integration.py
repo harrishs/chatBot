@@ -63,6 +63,15 @@ class EmbedTextTests(SimpleTestCase):
 
 
 class GenerateAnswerTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self._embed_patch = patch("chat.utils.rag.embed_text", return_value=[0.1, 0.2, 0.3])
+        self.mock_embed = self._embed_patch.start()
+
+    def tearDown(self):
+        self._embed_patch.stop()
+        super().tearDown()
+
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_success(self):
         mock_client = Mock()
@@ -105,6 +114,7 @@ class GenerateAnswerTests(SimpleTestCase):
         self.assertIn("drafts", result)
         self.assertGreaterEqual(len(result["drafts"]), 1)
         self.assertEqual(result["drafts"][0]["answer"], result["answer"])
+        self.assertEqual(result["drafts"][0]["raw_answer"], "final answer referencing [jira:PROJ-1]")
         self.assertIn("[jira:PROJ-1]", result["drafts"][0]["citations"])
         metadata_entry = result["sources"][0]
         self.assertEqual(metadata_entry["source"], "jira")
@@ -120,13 +130,18 @@ class GenerateAnswerTests(SimpleTestCase):
         self.assertEqual(metadata_entry["chunk_index"], 0)
         self.assertEqual(metadata_entry["chunk_count"], 1)
         mock_client.chat.completions.create.assert_called_once()
-        mock_search_documents.assert_called_once_with(1, 2, "question", 5)
-        mock_rerank_documents.assert_called_once_with("question", documents)
+        mock_search_documents.assert_called_once_with(
+            1, 2, "question", 5, query_embedding=[0.1, 0.2, 0.3]
+        )
+        mock_rerank_documents.assert_called_once()
+        rerank_call = mock_rerank_documents.call_args
+        self.assertEqual(rerank_call.args[0], "question")
+        self.assertEqual(len(rerank_call.args[1]), len(documents))
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(item["content"] for item in messages if item["role"] == "user")
-        self.assertIn("Title: Issue title", user_content)
-        self.assertIn("Snippet:\nIssue title\nA concise update about the fix.", user_content)
+        self.assertIn("[jira:PROJ-1]", user_content)
+        self.assertIn("Issue title A concise update about the fix.", user_content)
         self.assertNotIn("n", mock_client.chat.completions.create.call_args.kwargs)
 
     @override_settings(
@@ -189,7 +204,14 @@ class GenerateAnswerTests(SimpleTestCase):
 
         search_queries: List[str] = []
 
-        def _search_side_effect(company_id, chatbot_id, query, top_k, sources=None):
+        def _search_side_effect(
+            company_id,
+            chatbot_id,
+            query,
+            top_k,
+            sources=None,
+            query_embedding=None,
+        ):
             search_queries.append(query)
             if query == "question":
                 return initial_documents
@@ -200,7 +222,7 @@ class GenerateAnswerTests(SimpleTestCase):
         with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
             "chat.utils.rag.search_documents",
             side_effect=_search_side_effect,
-        ), patch(
+        ) as mock_search_documents, patch(
             "chat.utils.rag.rerank_documents",
             side_effect=lambda q, docs: list(docs),
         ), patch(
@@ -216,6 +238,16 @@ class GenerateAnswerTests(SimpleTestCase):
         reasoning = result["reasoning_trace"].get("query_rewrite")
         self.assertIsNotNone(reasoning)
         self.assertIn("better keywords", reasoning.get("rewrites", []))
+        first_call = mock_search_documents.call_args_list[0]
+        self.assertEqual(first_call.args[:4], (1, 2, "question", 5))
+        self.assertEqual(first_call.kwargs.get("query_embedding"), [0.1, 0.2, 0.3])
+        self.assertTrue(
+            any(
+                (len(call.args) > 2 and call.args[2] == "better keywords")
+                or call.kwargs.get("query") == "better keywords"
+                for call in mock_search_documents.call_args_list
+            )
+        )
         mock_record_event.assert_called()
 
     @override_settings(OPENAI_API_KEY="test-key")
@@ -334,8 +366,9 @@ class GenerateAnswerTests(SimpleTestCase):
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(item["content"] for item in messages if item["role"] == "user")
-        self.assertIn("Path: app/main.py", user_content)
-        self.assertIn("Snippet:\nprint('ready')", user_content)
+        self.assertIn("[github:app/main.py]", user_content)
+        self.assertIn("main.py", user_content)
+        self.assertIn("print('ready')", user_content)
 
     @override_settings(OPENAI_API_KEY="test-key")
     def test_generate_answer_prompt_includes_confluence_title_and_snippet(self):
@@ -368,9 +401,103 @@ class GenerateAnswerTests(SimpleTestCase):
 
         messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
         user_content = next(item["content"] for item in messages if item["role"] == "user")
-        self.assertIn("Title: Release Notes", user_content)
-        self.assertIn("Section: Overview", user_content)
-        self.assertIn("Snippet:\nThe release introduces key capabilities.", user_content)
+        self.assertIn("[confluence:Release Doc]", user_content)
+        self.assertIn("Release Notes", user_content)
+        self.assertIn("The release introduces key capabilities.", user_content)
+
+    @override_settings(OPENAI_API_KEY="test-key", RAG_MIN_DRAFT_COUNT=3)
+    def test_generate_answer_consensus_prefers_shared_citations(self):
+        mock_client = Mock()
+        consensus_choice = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Answer referencing [jira:PROJ-1] with details"
+            )
+        )
+        second_consensus_choice = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Follow-up also citing [jira:PROJ-1] for clarity"
+            )
+        )
+        outlier_choice = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Conflicting summary with [jira:PROJ-2] and [confluence:CONF-1]"
+            )
+        )
+        mock_response = SimpleNamespace(
+            choices=[outlier_choice, consensus_choice, second_consensus_choice]
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-1",
+                "source_display": "PROJ-1",
+                "content": "Primary fix details",
+                "metadata": {
+                    "title": "Primary Fix",
+                    "chunk_text": "Primary fix details",
+                },
+                "combined_score": 0.92,
+                "similarity": 0.92,
+            },
+            {
+                "source": "jira",
+                "source_id": "PROJ-2",
+                "source_display": "PROJ-2",
+                "content": "Secondary update",
+                "metadata": {
+                    "title": "Secondary Update",
+                    "chunk_text": "Secondary update",
+                },
+                "combined_score": 0.88,
+                "similarity": 0.88,
+            },
+            {
+                "source": "confluence",
+                "source_id": "CONF-1",
+                "source_display": "CONF-1",
+                "content": "Checklist",
+                "metadata": {
+                    "title": "Checklist",
+                    "chunk_text": "Checklist",
+                },
+                "combined_score": 0.86,
+                "similarity": 0.86,
+            },
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ) as mock_search_documents, patch(
+            "chat.utils.rag.rerank_documents", return_value=documents
+        ) as mock_rerank_documents:
+            result = rag.generate_answer(company_id=5, chatbot_id=9, query="status")
+
+        self.assertEqual(result["answer"], "Answer referencing [jira:PROJ-1] with details")
+        self.assertEqual(result["reasoning_trace"]["selected_draft_index"], 1)
+        self.assertEqual(
+            result["drafts"][result["reasoning_trace"]["selected_draft_index"]]["raw_answer"],
+            "Answer referencing [jira:PROJ-1] with details",
+        )
+        self.assertIn("consensus", result["reasoning_trace"])
+        self.assertEqual(
+            result["reasoning_trace"]["consensus"]["method"], "consensus_citations"
+        )
+        self.assertIn(
+            "[jira:PROJ-1]",
+            result["reasoning_trace"]["consensus"]["consensus_citations"],
+        )
+        self.assertEqual(mock_client.chat.completions.create.call_args.kwargs.get("n"), 3)
+        mock_search_documents.assert_called()
+        self.assertEqual(
+            mock_search_documents.call_args_list[0].kwargs.get("query_embedding"),
+            [0.1, 0.2, 0.3],
+        )
+        mock_rerank_documents.assert_called_once()
+        rerank_call = mock_rerank_documents.call_args
+        self.assertEqual(rerank_call.args[0], "status")
+        self.assertEqual(len(rerank_call.args[1]), len(documents))
 
     @override_settings(
         OPENAI_API_KEY="test-key",
