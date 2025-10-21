@@ -675,8 +675,11 @@ class ChatbotAccessAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         mock_generate_answer.assert_not_called()
 
+    @patch("chat.utils.embeddings.embed_text", return_value=[0.1] * 1536)
     @patch("chat.views.generate_answer")
-    def test_chat_with_bot_feedback_command_creates_comment(self, mock_generate_answer):
+    def test_chat_with_bot_feedback_command_creates_comment(
+        self, mock_generate_answer, mock_embed_text
+    ):
         response = self.client.post(
             self.chat_url,
             {"query": "/feedback The bot is fantastic"},
@@ -686,6 +689,7 @@ class ChatbotAccessAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, {"message": "Thanks for your feedback!"})
         mock_generate_answer.assert_not_called()
+        mock_embed_text.assert_called_once()
 
         feedback = ChatFeedback.objects.get()
         self.assertEqual(feedback.chatBot, self.chatbot)
@@ -694,8 +698,16 @@ class ChatbotAccessAPITests(APITestCase):
         self.assertEqual(feedback.answer, "")
         self.assertIsNone(feedback.is_helpful)
 
+        document = Document.objects.get(source="feedback")
+        self.assertEqual(document.source_id, f"feedback-{feedback.id}")
+        self.assertEqual(document.metadata.get("comment"), "The bot is fantastic")
+        self.assertEqual(document.metadata.get("source_display"), f"feedback-{feedback.id}")
+
+    @patch("chat.utils.embeddings.embed_text", return_value=[0.2] * 1536)
     @patch("chat.views.generate_answer")
-    def test_chat_with_bot_feedback_command_respects_comment_field(self, mock_generate_answer):
+    def test_chat_with_bot_feedback_command_respects_comment_field(
+        self, mock_generate_answer, mock_embed_text
+    ):
         response = self.client.post(
             self.chat_url,
             {"query": "/feedback", "comment": "Needs to cite more sources"},
@@ -704,12 +716,20 @@ class ChatbotAccessAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         mock_generate_answer.assert_not_called()
+        mock_embed_text.assert_called_once()
 
         feedback = ChatFeedback.objects.get()
         self.assertEqual(feedback.comment, "Needs to cite more sources")
 
+        document = Document.objects.get(source="feedback")
+        self.assertEqual(document.metadata.get("comment"), "Needs to cite more sources")
+        self.assertEqual(document.metadata.get("source_display"), f"feedback-{feedback.id}")
+
+    @patch("chat.utils.embeddings.embed_text")
     @patch("chat.views.generate_answer")
-    def test_chat_with_bot_feedback_command_requires_comment(self, mock_generate_answer):
+    def test_chat_with_bot_feedback_command_requires_comment(
+        self, mock_generate_answer, mock_embed_text
+    ):
         response = self.client.post(
             self.chat_url,
             {"query": "/feedback   "},
@@ -718,6 +738,7 @@ class ChatbotAccessAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data, {"comment": ["Feedback comment cannot be empty."]})
+        mock_embed_text.assert_not_called()
         mock_generate_answer.assert_not_called()
         self.assertFalse(ChatFeedback.objects.exists())
 

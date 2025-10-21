@@ -15,7 +15,7 @@ from django.contrib.postgres.search import (
     TrigramSimilarity,
 )
 from django.db import connection
-from django.db.models import Case, ExpressionWrapper, F, FloatField, Value, When
+from django.db.models import Case, ExpressionWrapper, F, FloatField, Q, Value, When
 from django.db.models import Max
 from django.db.models import Window
 from django.db.models.functions import Coalesce
@@ -29,7 +29,7 @@ from openai import (
 )
 from pgvector.django import CosineDistance
 
-from chat.models import Document
+from chat.models import ChatFeedback, Document
 
 
 logger = logging.getLogger(__name__)
@@ -413,6 +413,19 @@ def _normalize_source_id(source_id: str) -> str:
     return source_id.split("_part_", 1)[0]
 
 
+def _document_metadata_for_search(doc: Document) -> Tuple[str, Optional[str], Dict[str, object]]:
+    raw_metadata = doc.metadata if isinstance(doc.metadata, Mapping) else {}
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+
+    normalized_source_id = _normalize_source_id(doc.source_id)
+    source_display = metadata.get("source_display") or normalized_source_id
+    source_url = metadata.get("source_url")
+    if not source_url and normalized_source_id and normalized_source_id.startswith("http"):
+        source_url = normalized_source_id
+
+    return source_display, source_url, metadata
+
+
 def save_document(
     *,
     company,
@@ -479,6 +492,115 @@ def save_document(
         docs.append(doc)
 
     return docs
+
+
+def _feedback_source_id(feedback: ChatFeedback) -> str:
+    return f"feedback-{feedback.id}"
+
+
+def delete_feedback_document(feedback: ChatFeedback) -> int:
+    """Remove any embedded documents associated with ``feedback``."""
+
+    if not feedback or not feedback.id:
+        return 0
+
+    base_id = _feedback_source_id(feedback)
+    conditions = Q(source_id=base_id) | Q(source_id__startswith=f"{base_id}_part_")
+
+    deleted, _ = (
+        Document.objects.filter(
+            company=feedback.chatBot.company,
+            chatbot=feedback.chatBot,
+            source="feedback",
+        )
+        .filter(conditions)
+        .delete()
+    )
+    return int(deleted)
+
+
+def upsert_feedback_document(feedback: ChatFeedback) -> List[Document]:
+    """Create or update embedded documents for ``feedback`` records."""
+
+    if not feedback or not feedback.id:
+        return []
+
+    comment = (feedback.comment or "").strip()
+    question = (feedback.question or "").strip()
+    answer = (feedback.answer or "").strip()
+    helpful = feedback.is_helpful
+
+    if not any([comment, question, answer]):
+        delete_feedback_document(feedback)
+        return []
+
+    summary_pieces: List[str] = []
+    if question:
+        summary_pieces.append(f"Question: {question}")
+    if answer:
+        summary_pieces.append(f"Assistant answer: {answer}")
+    if helpful is not None:
+        helpful_label = "helpful" if helpful else "not helpful"
+        summary_pieces.append(f"Marked as {helpful_label} by the user")
+    if comment:
+        summary_pieces.append(f"Comment: {comment}")
+
+    content = "\n\n".join(summary_pieces).strip()
+    if not content:
+        delete_feedback_document(feedback)
+        return []
+
+    base_id = _feedback_source_id(feedback)
+    created_at = feedback.created_at.isoformat() if feedback.created_at else None
+
+    def _shorten(value: str, limit: int = 80) -> str:
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1].rstrip() + "…"
+
+    title = question or (comment and _shorten(comment)) or "User feedback"
+    summary = comment or answer or question or "User feedback entry"
+    feedback_kind = "structured" if question and answer else "comment"
+
+    metadata: Dict[str, object] = {
+        "feedback_id": feedback.id,
+        "source_display": base_id,
+        "title": title,
+        "summary": _shorten(summary, 200),
+        "submitted_at": created_at,
+        "feedback_type": feedback_kind,
+    }
+
+    if question:
+        metadata["question"] = question
+    if answer:
+        metadata["answer"] = answer
+    if comment:
+        metadata["comment"] = comment
+    if helpful is not None:
+        metadata["is_helpful"] = bool(helpful)
+
+    documents = save_document(
+        company=feedback.chatBot.company,
+        chatbot=feedback.chatBot,
+        source="feedback",
+        source_id=base_id,
+        content=content,
+        metadata=metadata,
+        max_tokens=600,
+        overlap_tokens=60,
+    )
+
+    expected_ids = {doc.source_id for doc in documents}
+    base_conditions = Q(source_id=base_id) | Q(source_id__startswith=f"{base_id}_part_")
+    Document.objects.filter(
+        company=feedback.chatBot.company,
+        chatbot=feedback.chatBot,
+        source="feedback",
+    ).filter(base_conditions).exclude(source_id__in=expected_ids).delete()
+
+    return documents
+
 
 def _search_documents_single(
     *,
@@ -577,25 +699,27 @@ def _search_documents_single(
 
         rows = enriched[:top_k]
 
-        return [
-            {
-                "id": item["doc"].id,
-                "source": item["doc"].source,
-                "source_id": item["doc"].source_id,
-                "source_display": _normalize_source_id(item["doc"].source_id),
-                "source_url": _normalize_source_id(item["doc"].source_id)
-                if _normalize_source_id(item["doc"].source_id).startswith("http")
-                else None,
-                "content": item["doc"].content,
-                "metadata": item["doc"].metadata,
-                "similarity": float(item["similarity"]),
-                "lexical_score": float(item["lexical_score"]),
-                "websearch_score": float(item["websearch_score"]),
-                "trigram_score": float(item["trigram_score"]),
-                "combined_score": float(item["combined_score"]),
-            }
-            for item in rows
-        ]
+        results: List[Dict[str, object]] = []
+        for item in rows:
+            display, url, metadata = _document_metadata_for_search(item["doc"])
+            results.append(
+                {
+                    "id": item["doc"].id,
+                    "source": item["doc"].source,
+                    "source_id": item["doc"].source_id,
+                    "source_display": display,
+                    "source_url": url,
+                    "content": item["doc"].content,
+                    "metadata": metadata,
+                    "similarity": float(item["similarity"]),
+                    "lexical_score": float(item["lexical_score"]),
+                    "websearch_score": float(item["websearch_score"]),
+                    "trigram_score": float(item["trigram_score"]),
+                    "combined_score": float(item["combined_score"]),
+                }
+            )
+
+        return results
 
     queryset = base_queryset.annotate(
         distance=CosineDistance("embedding", query_embedding)
@@ -688,25 +812,27 @@ def _search_documents_single(
 
     rows = queryset[:top_k]
 
-    return [
-        {
-            "id": doc.id,
-            "source": doc.source,
-            "source_id": doc.source_id,
-            "source_display": _normalize_source_id(doc.source_id),
-            "source_url": _normalize_source_id(doc.source_id)
-            if _normalize_source_id(doc.source_id).startswith("http")
-            else None,
-            "content": doc.content,
-            "metadata": doc.metadata,
-            "similarity": float(doc.similarity) if (doc.similarity is not None and not lexical_only) else 0.0,
-            "lexical_score": float(doc.lexical_score) if doc.lexical_score is not None else 0.0,
-            "websearch_score": float(doc.websearch_score) if doc.websearch_score is not None else 0.0,
-            "trigram_score": float(doc.trigram_score) if doc.trigram_score is not None else 0.0,
-            "combined_score": float(doc.combined_score) if doc.combined_score is not None else 0.0,
-        }
-        for doc in rows
-    ]
+    results: List[Dict[str, object]] = []
+    for doc in rows:
+        display, url, metadata = _document_metadata_for_search(doc)
+        results.append(
+            {
+                "id": doc.id,
+                "source": doc.source,
+                "source_id": doc.source_id,
+                "source_display": display,
+                "source_url": url,
+                "content": doc.content,
+                "metadata": metadata,
+                "similarity": float(doc.similarity) if (doc.similarity is not None and not lexical_only) else 0.0,
+                "lexical_score": float(doc.lexical_score) if doc.lexical_score is not None else 0.0,
+                "websearch_score": float(doc.websearch_score) if doc.websearch_score is not None else 0.0,
+                "trigram_score": float(doc.trigram_score) if doc.trigram_score is not None else 0.0,
+                "combined_score": float(doc.combined_score) if doc.combined_score is not None else 0.0,
+            }
+        )
+
+    return results
 
 
 def _finalize_search_attempts(

@@ -143,6 +143,33 @@ class SearchDocumentsRankingTests(TestCase):
         self.assertGreater(results[0]["combined_score"], results[1]["combined_score"])
 
     @patch("chat.utils.embeddings.embed_text")
+    def test_feedback_documents_are_returned_with_custom_display(self, mock_embed_text):
+        mock_embed_text.return_value = self.primary_embedding
+
+        feedback_comment = "Users want more onboarding guidance"
+        feedback_doc = Document.objects.create(
+            company=self.company,
+            chatbot=self.chatbot,
+            source="feedback",
+            source_id="feedback-42",
+            content=feedback_comment,
+            embedding=self.primary_embedding,
+            metadata={"comment": feedback_comment, "source_display": "feedback-42"},
+        )
+
+        results = search_documents(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="onboarding feedback",
+            top_k=5,
+        )
+
+        returned = next(result for result in results if result["id"] == feedback_doc.id)
+        self.assertEqual(returned["source"], "feedback")
+        self.assertEqual(returned["source_display"], "feedback-42")
+        self.assertEqual(returned["metadata"].get("comment"), feedback_comment)
+
+    @patch("chat.utils.embeddings.embed_text")
     def test_unmatched_query_has_zero_lexical_scores(self, mock_embed_text):
         mock_embed_text.return_value = self.primary_embedding
 
@@ -323,6 +350,65 @@ class SearchDocumentsRankingTests(TestCase):
         sources = {entry["source"] for entry in result["sources"]}
         self.assertIn("jira", sources)
         self.assertIn("confluence", sources)
+
+    @override_settings(OPENAI_API_KEY="test-key", MIGRATION_MODULES={"chat": None})
+    @patch("chat.utils.rag.embed_text", return_value=[0.1])
+    @patch("chat.utils.rag.rerank_documents", side_effect=lambda query, docs: docs)
+    @patch("chat.utils.rag.search_documents")
+    @patch("chat.utils.rag.get_openai_client")
+    def test_feedback_queries_prioritize_feedback_sources(
+        self,
+        mock_get_openai_client,
+        mock_search_documents,
+        mock_rerank_documents,
+        mock_embed_text,
+    ):
+        mock_get_openai_client.return_value = self._chat_client(
+            "Considering recent user feedback [feedback:feedback-1]"
+        )
+
+        feedback_metadata = {
+            "chunk_text": "Comment: Users reported confusion during onboarding.",
+            "comment": "Users reported confusion during onboarding.",
+        }
+        feedback_documents = [
+            {
+                "id": 301,
+                "source": "feedback",
+                "source_id": "feedback-1",
+                "source_display": "feedback-1",
+                "combined_score": 0.9,
+                "similarity": 0.9,
+                "metadata": feedback_metadata,
+            }
+        ]
+
+        mock_search_documents.side_effect = [feedback_documents, feedback_documents]
+
+        result = rag.generate_answer(
+            company_id=self.company.id,
+            chatbot_id=self.chatbot.id,
+            query="What does the feedback say about onboarding?",
+        )
+
+        self.assertGreaterEqual(len(mock_search_documents.call_args_list), 2)
+        first_kwargs = mock_search_documents.call_args_list[0].kwargs
+        self.assertEqual(first_kwargs.get("sources"), ["feedback"])
+        fallback_kwargs = mock_search_documents.call_args_list[-1].kwargs
+        self.assertIsNone(fallback_kwargs.get("sources"))
+
+        trace = result.get("reasoning_trace", {})
+        self.assertIn(["feedback"], trace.get("retrieval_source_plan", []))
+
+        sources = {entry["source"] for entry in result["sources"]}
+        self.assertIn("feedback", sources)
+        self.assertTrue(
+            any(
+                "onboarding" in (entry.get("snippet") or "")
+                for entry in result["sources"]
+                if entry.get("source") == "feedback"
+            )
+        )
 
 
 class RerankDocumentsTests(TestCase):

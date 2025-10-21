@@ -155,6 +155,18 @@ def _plan_retrieval_sources(
         "code review",
     }
 
+    feedback_keywords = {
+        "feedback",
+        "review",
+        "reviews",
+        "rating",
+        "ratings",
+        "complaint",
+        "complaints",
+        "praise",
+        "satisfaction",
+    }
+
     jira_key_pattern = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
     if normalized:
@@ -168,6 +180,9 @@ def _plan_retrieval_sources(
 
         if any(keyword in normalized for keyword in github_keywords):
             _append_plan(["github"])
+
+        if any(keyword in normalized for keyword in feedback_keywords):
+            _append_plan(["feedback"])
 
     return source_plan
 

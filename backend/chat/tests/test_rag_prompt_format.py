@@ -148,3 +148,39 @@ class GenerateAnswerPromptTests(TestCase):
         self.assertEqual(source_metadata["snippet"], snippet)
         self.assertEqual(source_metadata["chunk_text"], snippet)
         self.assertEqual(result["reasoning_trace"]["research_notes"], research_notes)
+
+    def test_prompt_includes_feedback_metadata(self):
+        comment = "Users reported confusion during onboarding."
+        documents = [
+            {
+                "id": 3,
+                "source": "feedback",
+                "source_id": "feedback-3",
+                "source_display": "feedback-3",
+                "similarity": 0.77,
+                "combined_score": 0.8,
+                "metadata": {
+                    "title": "User feedback",
+                    "summary": comment,
+                    "comment": comment,
+                    "chunk_text": f"Comment: {comment}",
+                },
+            }
+        ]
+
+        research_notes = [
+            "- Users reported confusion during onboarding [feedback:feedback-3]"
+        ]
+
+        result, _, user_prompt = self._run_generate_answer(
+            documents, research_notes=research_notes
+        )
+
+        self.assertIn("[feedback:feedback-3]", user_prompt)
+        self.assertIn(research_notes[0], user_prompt)
+        self.assertIn("confusion", user_prompt)
+
+        feedback_entry = next(
+            entry for entry in result["sources"] if entry["source"] == "feedback"
+        )
+        self.assertIn("confusion", feedback_entry.get("snippet", ""))

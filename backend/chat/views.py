@@ -11,7 +11,11 @@ from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
 from rest_framework.decorators import action, api_view
 from rest_framework.views import APIView
-from chat.utils.embeddings import search_documents
+from chat.utils.embeddings import (
+    delete_feedback_document,
+    search_documents,
+    upsert_feedback_document,
+)
 from chat.utils.rag import generate_answer
 from django.contrib.auth import authenticate, login, logout
 from django.http import Http404
@@ -474,7 +478,23 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
         chatBot = chatBot or self._get_chatbot_from_request()
         if chatBot.company != self.request.user.company:
             raise NotFound('Chatbot not found.')
-        serializer.save(chatBot=chatBot)
+        feedback = serializer.save(chatBot=chatBot)
+        upsert_feedback_document(feedback)
+
+    def perform_update(self, serializer):
+        feedback = serializer.instance
+        if feedback.chatBot.company != self.request.user.company:
+            raise NotFound('Chatbot not found.')
+
+        updated = serializer.save()
+        upsert_feedback_document(updated)
+
+    def perform_destroy(self, instance):
+        if instance.chatBot.company != self.request.user.company:
+            raise NotFound('Chatbot not found.')
+
+        delete_feedback_document(instance)
+        super().perform_destroy(instance)
 
 class GitCredentialViewSet(viewsets.ModelViewSet):
     serializer_class = GitCredentialSerializer
@@ -640,7 +660,8 @@ def chat_with_bot(request, chatbot_id):
 
         serializer = ChatFeedbackSerializer(data={'comment': comment})
         serializer.is_valid(raise_exception=True)
-        serializer.save(chatBot=chatbot)
+        feedback = serializer.save(chatBot=chatbot)
+        upsert_feedback_document(feedback)
 
         return Response({'message': 'Thanks for your feedback!'}, status=status.HTTP_200_OK)
 
