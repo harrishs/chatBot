@@ -5,7 +5,10 @@ from .models import User, Company, ChatBotInstance, JiraSync, ConfluenceSync, Ch
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
     fieldsets = BaseUserAdmin.fieldsets + (
-        ("Company Info", {"fields": ("company",)}),
+        ("Company Info", {"fields": ("company", "role")}),
+    )
+    add_fieldsets = BaseUserAdmin.add_fieldsets + (
+        ("Company Info", {"fields": ("company", "role")}),
     )
 
 admin.site.register(Company)

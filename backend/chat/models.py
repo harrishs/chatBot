@@ -120,7 +120,12 @@ class Company(models.Model):
     
 
 class User(AbstractUser):
+    class Role(models.TextChoices):
+        ADMIN = 'admin', 'Admin'
+        VIEWER = 'viewer', 'Viewer'
+
     company = models.ForeignKey('Company', on_delete=models.CASCADE, related_name='users', null=True)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.ADMIN)
 
     def __str__(self):
         company_name = self.company.name if self.company else "No Company"

@@ -22,6 +22,7 @@ class UserViewSetPermissionTests(TestCase):
         )
         self.staff_user.company = self.company
         self.staff_user.is_staff = True
+        self.staff_user.role = User.Role.ADMIN
         self.staff_user.save()
 
         self.regular_user = User.objects.create_user(
@@ -31,6 +32,7 @@ class UserViewSetPermissionTests(TestCase):
         )
         self.regular_user.company = self.company
         self.regular_user.is_staff = False
+        self.regular_user.role = User.Role.VIEWER
         self.regular_user.save()
 
         self.existing_user = User.objects.create_user(
@@ -39,6 +41,7 @@ class UserViewSetPermissionTests(TestCase):
             password="password123",
         )
         self.existing_user.company = self.company
+        self.existing_user.role = User.Role.ADMIN
         self.existing_user.save()
 
     def test_non_staff_user_cannot_create_user(self):
@@ -95,6 +98,66 @@ class UserViewSetPermissionTests(TestCase):
         delete_response = self.client.delete(reverse("user-detail", args=[managed_user_id]))
         self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(User.objects.filter(id=managed_user_id).exists())
+
+    def test_staff_user_can_create_viewer(self):
+        self.client.force_authenticate(self.staff_user)
+
+        response = self.client.post(
+            reverse("user-list"),
+            {
+                "username": "viewer",
+                "email": "viewer@example.com",
+                "password": "password123",
+                "role": User.Role.VIEWER,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        viewer = User.objects.get(id=response.data["id"])
+        self.assertEqual(viewer.role, User.Role.VIEWER)
+
+    def test_staff_user_can_promote_and_demote_roles(self):
+        self.client.force_authenticate(self.staff_user)
+        target_user = User.objects.create_user(
+            username="target",
+            email="target@example.com",
+            password="password123",
+        )
+        target_user.company = self.company
+        target_user.role = User.Role.VIEWER
+        target_user.save()
+
+        promote_response = self.client.patch(
+            reverse("user-detail", args=[target_user.id]),
+            {"role": User.Role.ADMIN},
+            format="json",
+        )
+        self.assertEqual(promote_response.status_code, status.HTTP_200_OK)
+        target_user.refresh_from_db()
+        self.assertEqual(target_user.role, User.Role.ADMIN)
+
+        demote_response = self.client.patch(
+            reverse("user-detail", args=[target_user.id]),
+            {"role": User.Role.VIEWER},
+            format="json",
+        )
+        self.assertEqual(demote_response.status_code, status.HTTP_200_OK)
+        target_user.refresh_from_db()
+        self.assertEqual(target_user.role, User.Role.VIEWER)
+
+    def test_viewer_cannot_promote_self_to_admin(self):
+        self.client.force_authenticate(self.regular_user)
+
+        response = self.client.patch(
+            reverse("user-detail", args=[self.regular_user.id]),
+            {"role": User.Role.ADMIN},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.regular_user.refresh_from_db()
+        self.assertEqual(self.regular_user.role, User.Role.VIEWER)
 
 
 class CompanyViewSetPermissionTests(TestCase):
