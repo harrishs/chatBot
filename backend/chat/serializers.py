@@ -7,21 +7,43 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'company', 'password']
+        fields = ['id', 'username', 'email', 'company', 'password', 'role']
         extra_kwargs = {
             'password': {'write_only': True},
             'company': {'read_only': True},
+            'role': {'required': False},
         }
 
     def create(self, validated_data):
         password = validated_data.pop('password')
+        role = validated_data.pop('role', User.Role.ADMIN)
         user = User(**validated_data)
+        user.role = role
         user.set_password(password)
         user.save()
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        request = self.context.get('request')
+        actor = getattr(request, 'user', None) if request else None
+        new_role = validated_data.pop('role', None)
+
+        if new_role is not None:
+            if not actor or not actor.is_authenticated:
+                raise serializers.ValidationError({'role': 'Authentication required to modify roles.'})
+
+            actor_role = getattr(actor, 'role', User.Role.ADMIN)
+
+            if actor_role == User.Role.VIEWER and not actor.is_staff:
+                raise serializers.ValidationError({'role': 'Viewers cannot modify roles.'})
+
+            if instance == actor and new_role == User.Role.ADMIN:
+                current_role = getattr(instance, 'role', User.Role.ADMIN)
+                if not actor.is_staff and current_role != User.Role.ADMIN:
+                    raise serializers.ValidationError({'role': 'You cannot promote yourself to admin.'})
+
+            instance.role = new_role
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
