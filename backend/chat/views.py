@@ -8,7 +8,12 @@ import logging
 import re
 from django.db import transaction
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
+from rest_framework.exceptions import (
+    NotAuthenticated,
+    PermissionDenied,
+    ValidationError,
+    NotFound,
+)
 from rest_framework.decorators import action, api_view
 from rest_framework.views import APIView
 from chat.utils.embeddings import (
@@ -86,17 +91,25 @@ User = get_user_model()
 class IsAdminOrReadOnly(permissions.BasePermission):
     """Allow non-admin users to perform read-only requests."""
 
+    def _is_admin_user(self, user):
+        return bool(user and user.is_authenticated and user.is_staff)
+
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
-            return request.user and request.user.is_authenticated
+            if request.user and request.user.is_authenticated:
+                return True
+            raise NotAuthenticated()
+
+        if not request.user or not request.user.is_authenticated:
+            raise NotAuthenticated()
 
         if getattr(view, "basename", None) == "user":
             if request.method == "POST" or getattr(view, "action", None) == "create":
-                return bool(request.user and request.user.is_staff)
+                return self._is_admin_user(request.user)
 
             return bool(request.user and request.user.is_authenticated)
 
-        return bool(request.user and request.user.is_staff)
+        return self._is_admin_user(request.user)
 
     def has_object_permission(self, request, view, obj):
         if request.method in permissions.SAFE_METHODS:
@@ -105,12 +118,25 @@ class IsAdminOrReadOnly(permissions.BasePermission):
         if isinstance(obj, User) and request.user == obj:
             return True
 
-        return bool(request.user and request.user.is_staff)
+        return self._is_admin_user(request.user)
+
+
+class IsCompanyAdminOrReadOnly(IsAdminOrReadOnly):
+    """Allow company admins (non-staff) to perform write actions."""
+
+    def _is_admin_user(self, user):
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.is_staff:
+            return True
+
+        return getattr(user, "role", None) == User.Role.ADMIN
 
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def get_queryset(self):
         return User.objects.filter(company=self.request.user.company)
@@ -196,7 +222,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
 
 class CredentialViewSet(viewsets.ModelViewSet):
     serializer_class = CredentialSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def get_queryset(self):
         return Credential.objects.filter(company=self.request.user.company)
@@ -216,7 +242,7 @@ class CredentialViewSet(viewsets.ModelViewSet):
 
 class ChatBotInstanceViewSet(viewsets.ModelViewSet):
     serializer_class = ChatBotInstanceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def get_queryset(self):
         return ChatBotInstance.objects.filter(company=self.request.user.company)
@@ -226,7 +252,7 @@ class ChatBotInstanceViewSet(viewsets.ModelViewSet):
 
 class JiraSyncViewSet(viewsets.ModelViewSet):
     serializer_class = JiraSyncSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
     lookup_field = 'id'
     lookup_url_kwarg = 'pk'
 
@@ -332,7 +358,7 @@ class JiraSyncViewSet(viewsets.ModelViewSet):
 
 class ConfluenceSyncViewSet(viewsets.ModelViewSet):
     serializer_class = ConfluenceSyncSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def _get_chatbot_pk(self):
         chatbot_id = self.kwargs.get('chatbot_pk')
@@ -435,7 +461,7 @@ class ConfluenceSyncViewSet(viewsets.ModelViewSet):
 
 class ChatFeedbackViewSet(viewsets.ModelViewSet):
     serializer_class = ChatFeedbackSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def get_queryset(self):
         return ChatFeedback.objects.filter(chatBot__company=self.request.user.company)
@@ -498,7 +524,7 @@ class ChatFeedbackViewSet(viewsets.ModelViewSet):
 
 class GitCredentialViewSet(viewsets.ModelViewSet):
     serializer_class = GitCredentialSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def get_queryset(self):
         return GitCredential.objects.filter(company=self.request.user.company)
@@ -510,7 +536,7 @@ class GitCredentialViewSet(viewsets.ModelViewSet):
     
 class GitRepoSyncViewSet(viewsets.ModelViewSet):
     serializer_class = GitRepoSyncSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsCompanyAdminOrReadOnly]
 
     def _get_chatbot_pk(self):
         chatbot_id = self.kwargs.get('chatbot_pk')

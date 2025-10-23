@@ -35,6 +35,16 @@ class UserViewSetPermissionTests(TestCase):
         self.regular_user.role = User.Role.VIEWER
         self.regular_user.save()
 
+        self.company_admin = User.objects.create_user(
+            username="company-admin",
+            email="company-admin@example.com",
+            password="password123",
+        )
+        self.company_admin.company = self.company
+        self.company_admin.is_staff = False
+        self.company_admin.role = User.Role.ADMIN
+        self.company_admin.save()
+
         self.existing_user = User.objects.create_user(
             username="john",
             email="john@example.com",
@@ -93,6 +103,30 @@ class UserViewSetPermissionTests(TestCase):
             {"email": "managed-update@example.com"},
             format="json",
         )
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+
+        delete_response = self.client.delete(reverse("user-detail", args=[managed_user_id]))
+        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=managed_user_id).exists())
+
+    def test_company_admin_can_manage_users_in_company(self):
+        self.client.force_authenticate(self.company_admin)
+
+        create_response = self.client.post(
+            reverse("user-list"),
+            {"username": "team-member", "email": "team@example.com", "password": "password123"},
+            format="json",
+        )
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        managed_user_id = create_response.data["id"]
+
+        patch_response = self.client.patch(
+            reverse("user-detail", args=[managed_user_id]),
+            {"email": "team-update@example.com"},
+            format="json",
+        )
+
         self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
 
         delete_response = self.client.delete(reverse("user-detail", args=[managed_user_id]))
@@ -158,6 +192,19 @@ class UserViewSetPermissionTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.regular_user.refresh_from_db()
         self.assertEqual(self.regular_user.role, User.Role.VIEWER)
+
+    def test_viewer_can_update_their_own_profile(self):
+        self.client.force_authenticate(self.regular_user)
+
+        response = self.client.patch(
+            reverse("user-detail", args=[self.regular_user.id]),
+            {"email": "jane-update@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.regular_user.refresh_from_db()
+        self.assertEqual(self.regular_user.email, "jane-update@example.com")
 
 
 class CompanyViewSetPermissionTests(TestCase):
