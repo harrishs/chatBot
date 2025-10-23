@@ -49,6 +49,9 @@ function ChatBots() {
 			return;
 		try {
 			await api.delete(`/chatBots/${id}/`);
+			setEditingId(null);
+			setName("");
+			setDescription("");
 			fetchChatbots();
 		} catch (err) {
 			console.error("Failed to delete chatbot:", err);

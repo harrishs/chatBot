@@ -57,11 +57,39 @@ function Credentials() {
 		}
 	};
 
+	const handleGitSubmit = async (e) => {
+		e.preventDefault();
+		if (editGitId) {
+			await api.put(`/gitCredentials/${editGitId}/`, newGitCred);
+			setEditGitId(null);
+		} else {
+			await api.post("/gitCredentials/", newGitCred);
+		}
+		setNewGitCred({ name: "", github_username: "", token: "" });
+		setGitCreds((await api.get("/gitCredentials/")).data);
+	};
+
 	const handleDelete = async (id) => {
 		if (!window.confirm("Are you sure you want to delete this credential?"))
 			return;
 		try {
 			await api.delete(`/credentials/${id}/`);
+			setName("");
+			setApiKey("");
+			setEmail("");
+			setEditId(null);
+			fetchCredentials();
+		} catch (err) {
+			console.error("Failed to delete credential:", err);
+		}
+	};
+
+	const handleGitDelete = async (id) => {
+		if (!window.confirm("Are you sure you want to delete this credential?"))
+			return;
+		try {
+			await api.delete(`/gitCredentials/${id}/`);
+			setNewGitCred({ name: "", github_username: "", token: "" });
 			fetchCredentials();
 		} catch (err) {
 			console.error("Failed to delete credential:", err);
@@ -74,6 +102,15 @@ function Credentials() {
 		setEditId(cred.id);
 		//Api key not available as it is write-only, user must re-enter it
 		setApiKey("");
+	};
+
+	const handleGitEdit = (cred) => {
+		setEditGitId(cred.id);
+		setNewGitCred({
+			name: cred.name,
+			github_username: cred.github_username,
+			token: "",
+		});
 	};
 
 	return (
@@ -104,18 +141,18 @@ function Credentials() {
 						required
 					/>
 				</div>
-                                <div>
-                                        <label>API Key:</label>
-                                        <br />
-                                        <input
-                                                type="password"
-                                                autoComplete="off"
-                                                value={apiKey}
-                                                onChange={(e) => setApiKey(e.target.value)}
-                                                required
-                                                placeholder={editId ? "Enter New/ Existing Key" : ""}
-                                        />
-                                </div>
+				<div>
+					<label>API Key:</label>
+					<br />
+					<input
+						type="password"
+						autoComplete="off"
+						value={apiKey}
+						onChange={(e) => setApiKey(e.target.value)}
+						required
+						placeholder={editId ? "Enter New/ Existing Key" : ""}
+					/>
+				</div>
 				<button type="submit">{editId ? "Update" : "Save"} Credential</button>
 				{editId && (
 					<button
@@ -137,19 +174,7 @@ function Credentials() {
 					? "Edit Github Credential"
 					: "Create a New Github Credential"}
 			</h2>
-			<form
-				onSubmit={async (e) => {
-					e.preventDefault();
-					if (editGitId) {
-						await api.put(`/gitCredentials/${editGitId}/`, newGitCred);
-						setEditGitId(null);
-					} else {
-						await api.post("/gitCredentials/", newGitCred);
-					}
-					setNewGitCred({ name: "", github_username: "", token: "" });
-					setGitCreds((await api.get("/gitCredentials/")).data);
-				}}
-			>
+			<form onSubmit={handleGitSubmit}>
 				<input
 					placeholder="Name"
 					value={newGitCred.name}
@@ -198,26 +223,8 @@ function Credentials() {
 				{gitCreds.map((cred) => (
 					<li key={cred.id}>
 						{cred.name} ({cred.github_username})
-						<button
-							onClick={() => {
-								setEditGitId(cred.id);
-								setNewGitCred({
-									name: cred.name,
-									github_username: cred.github_username,
-									token: "",
-								});
-							}}
-						>
-							Edit
-						</button>
-						<button
-							onClick={async () => {
-								await api.delete(`/gitCredentials/${cred.id}/`);
-								setGitCreds(gitCreds.filter((c) => c.id !== cred.id));
-							}}
-						>
-							Delete
-						</button>
+						<button onClick={() => handleGitEdit(cred)}>Edit</button>
+						<button onClick={() => handleGitDelete(cred.id)}>Delete</button>
 					</li>
 				))}
 			</ul>
