@@ -5,7 +5,8 @@ from django.db import migrations, models
 
 def set_default_roles(apps, schema_editor):
     User = apps.get_model("chat", "User")
-    User.objects.filter(is_staff=False).update(role="admin")
+    User.objects.filter(is_staff=True).update(role="admin")
+    User.objects.filter(is_staff=False).update(role="viewer")
 
 
 class Migration(migrations.Migration):
@@ -20,7 +21,7 @@ class Migration(migrations.Migration):
             name="role",
             field=models.CharField(
                 choices=[("admin", "Admin"), ("viewer", "Viewer")],
-                default="admin",
+                default="viewer",
                 max_length=20,
             ),
         ),
