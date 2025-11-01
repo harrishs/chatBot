@@ -2,7 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import api from "../api/axios";
 
-const AuthContext = createContext({
+export const AuthContext = createContext({
         user: null,
         initializing: true,
         login: async () => {},
