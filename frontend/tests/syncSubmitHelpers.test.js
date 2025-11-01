@@ -15,7 +15,7 @@ test("handleJiraSubmit blocks submission without credential", async () => {
         };
 
         const postCalls = [];
-        let alertMessage = null;
+        const notifications = [];
         let resetCalled = false;
         let reloadCalled = false;
 
@@ -33,8 +33,8 @@ test("handleJiraSubmit blocks submission without credential", async () => {
                                 return Promise.resolve();
                         },
                 },
-                alertFn: (message) => {
-                        alertMessage = message;
+                notifier: (notification) => {
+                        notifications.push(notification);
                 },
                 resetForm: () => {
                         resetCalled = true;
@@ -48,10 +48,25 @@ test("handleJiraSubmit blocks submission without credential", async () => {
 
         assert.equal(prevented, true, "submit handler should prevent default form submission");
         assert.deepEqual(postCalls, [], "no network calls should be made");
-        assert.equal(alertMessage, SYNC_MISSING_CREDENTIAL_MESSAGE, "user should see validation alert");
+        assert.deepEqual(
+                notifications,
+                [
+                        {
+                                type: "error",
+                                message: SYNC_MISSING_CREDENTIAL_MESSAGE,
+                                placement: "inline",
+                                autoDismiss: null,
+                        },
+                ],
+                "user should see validation notification"
+        );
         assert.equal(resetCalled, false, "form should not reset on validation failure");
         assert.equal(reloadCalled, false, "data reload should not trigger on validation failure");
-        assert.deepEqual(result, { success: false, reason: "missing-credential" });
+        assert.deepEqual(result, {
+                success: false,
+                reason: "missing-credential",
+                notification: notifications[0],
+        });
 });
 
 test("handleConfluenceSubmit blocks submission without credential", async () => {
@@ -63,7 +78,7 @@ test("handleConfluenceSubmit blocks submission without credential", async () => 
         };
 
         const postCalls = [];
-        let alertMessage = null;
+        const notifications = [];
         let resetCalled = false;
         let reloadCalled = false;
 
@@ -81,8 +96,8 @@ test("handleConfluenceSubmit blocks submission without credential", async () => 
                                 return Promise.resolve();
                         },
                 },
-                alertFn: (message) => {
-                        alertMessage = message;
+                notifier: (notification) => {
+                        notifications.push(notification);
                 },
                 resetForm: () => {
                         resetCalled = true;
@@ -96,8 +111,23 @@ test("handleConfluenceSubmit blocks submission without credential", async () => 
 
         assert.equal(prevented, true, "submit handler should prevent default form submission");
         assert.deepEqual(postCalls, [], "no network calls should be made");
-        assert.equal(alertMessage, SYNC_MISSING_CREDENTIAL_MESSAGE, "user should see validation alert");
+        assert.deepEqual(
+                notifications,
+                [
+                        {
+                                type: "error",
+                                message: SYNC_MISSING_CREDENTIAL_MESSAGE,
+                                placement: "inline",
+                                autoDismiss: null,
+                        },
+                ],
+                "user should see validation notification"
+        );
         assert.equal(resetCalled, false, "form should not reset on validation failure");
         assert.equal(reloadCalled, false, "data reload should not trigger on validation failure");
-        assert.deepEqual(result, { success: false, reason: "missing-credential" });
+        assert.deepEqual(result, {
+                success: false,
+                reason: "missing-credential",
+                notification: notifications[0],
+        });
 });
