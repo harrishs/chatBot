@@ -6,6 +6,7 @@ from .serializers import CompanySerializer, ChatBotInstanceSerializer, JiraSyncS
 from django.contrib.auth import get_user_model
 import logging
 import re
+from datetime import timezone as datetime_timezone
 from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.exceptions import (
@@ -37,6 +38,135 @@ ACTIVE_SYNC_STATUSES = (
     SyncStatusMixin.Status.QUEUED,
     SyncStatusMixin.Status.RUNNING,
 )
+
+
+SUMMARY_TYPE_METADATA = {
+    "jira": {"label": "Jira"},
+    "confluence": {"label": "Confluence"},
+    "git": {"label": "Git"},
+}
+
+SUMMARY_TYPE_ORDER = ("jira", "confluence", "git")
+
+
+def _isoformat_timestamp(dt):
+    if not dt:
+        return None
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, datetime_timezone.utc)
+    return dt.astimezone(datetime_timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _sync_summary_label(sync, type_key):
+    if type_key == "jira":
+        return getattr(sync, "board_url", "")
+    if type_key == "confluence":
+        return getattr(sync, "space_url", "")
+    if type_key == "git":
+        repo = getattr(sync, "repo_full_name", "")
+        branch = getattr(sync, "branch", "") or "main"
+        return f"{repo} ({branch})" if repo else f"Git ({branch})"
+    return SUMMARY_TYPE_METADATA.get(type_key, {}).get("label", "Sync")
+
+
+def _build_sync_summary(chatbot):
+    breakdown = {
+        key: {"label": meta["label"], "total": 0, "running": 0, "failing": 0}
+        for key, meta in SUMMARY_TYPE_METADATA.items()
+    }
+    entries = []
+
+    def add_entry(sync, type_key):
+        if not sync:
+            return
+        status = getattr(sync, "sync_status", SyncStatusMixin.Status.IDLE)
+        entries.append(
+            {
+                "type": type_key,
+                "id": sync.id,
+                "label": _sync_summary_label(sync, type_key),
+                "status": status,
+                "last_sync_time": getattr(sync, "last_sync_time", None),
+                "next_sync_at": getattr(sync, "next_sync_at", None),
+                "message": getattr(sync, "sync_status_message", "") or "",
+            }
+        )
+        counts = breakdown[type_key]
+        counts["total"] += 1
+        if status in ACTIVE_SYNC_STATUSES:
+            counts["running"] += 1
+        if status == SyncStatusMixin.Status.FAILED:
+            counts["failing"] += 1
+
+    for sync in chatbot.jiraSyncs.all():
+        add_entry(sync, "jira")
+    for sync in chatbot.confluenceSyncs.all():
+        add_entry(sync, "confluence")
+    for sync in chatbot.gitRepoSyncs.all():
+        add_entry(sync, "git")
+
+    total_syncs = len(entries)
+    running_syncs = sum(1 for entry in entries if entry["status"] in ACTIVE_SYNC_STATUSES)
+    failing_syncs = sum(1 for entry in entries if entry["status"] == SyncStatusMixin.Status.FAILED)
+
+    latest_run = None
+    next_scheduled = None
+    last_failure = None
+
+    for entry in entries:
+        last_time = entry["last_sync_time"]
+        if last_time and (not latest_run or last_time > latest_run["time"]):
+            latest_run = {
+                "time": last_time,
+                "type": entry["type"],
+                "id": entry["id"],
+                "label": entry["label"],
+            }
+
+        next_time = entry["next_sync_at"]
+        if next_time and (not next_scheduled or next_time < next_scheduled["time"]):
+            next_scheduled = {
+                "time": next_time,
+                "type": entry["type"],
+                "id": entry["id"],
+                "label": entry["label"],
+            }
+
+        if entry["status"] == SyncStatusMixin.Status.FAILED:
+            failure_time = entry["last_sync_time"] or entry["next_sync_at"]
+            if not last_failure or (
+                failure_time and (last_failure.get("time") is None or failure_time > last_failure.get("time"))
+            ):
+                last_failure = {
+                    "time": failure_time,
+                    "type": entry["type"],
+                    "id": entry["id"],
+                    "label": entry["label"],
+                    "message": entry["message"],
+                }
+
+    def serialize_detail(detail, include_message=False):
+        if not detail:
+            return None
+        payload = {
+            "type": detail["type"],
+            "id": detail["id"],
+            "label": detail["label"],
+            "timestamp": _isoformat_timestamp(detail.get("time")),
+        }
+        if include_message:
+            payload["message"] = detail.get("message", "")
+        return payload
+
+    return {
+        "total_syncs": total_syncs,
+        "running_syncs": running_syncs,
+        "failing_syncs": failing_syncs,
+        "latest_run": serialize_detail(latest_run),
+        "next_scheduled": serialize_detail(next_scheduled),
+        "last_failure": serialize_detail(last_failure, include_message=True),
+        "breakdown": breakdown,
+    }
 
 
 DEFAULT_CHAT_TOP_K = 5
@@ -611,7 +741,21 @@ class GitRepoSyncViewSet(viewsets.ModelViewSet):
             _build_sync_status_response(sync),
             status=status.HTTP_200_OK,
         )
-    
+
+
+class ChatBotSyncSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, chatbot_id):
+        chatbot = get_object_or_404(
+            ChatBotInstance,
+            id=chatbot_id,
+            company=request.user.company,
+        )
+        summary = _build_sync_summary(chatbot)
+        return Response(summary, status=status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 def query_documents(request, chatbot_id):
     """
