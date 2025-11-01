@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../api/axios";
+import { useNotifications } from "../context/NotificationsContext.jsx";
 import { handleGitSubmit } from "./gitSubmitHelper";
 import { handleJiraSubmit, handleConfluenceSubmit } from "./syncSubmitHelpers";
 
 function ChatBotSyncs() {
-	const { chatBotId } = useParams();
+        const { chatBotId } = useParams();
+        const { notify } = useNotifications();
 
-	const [jiraSyncs, setJiraSyncs] = useState([]);
-	const [confluenceSyncs, setConfluenceSyncs] = useState([]);
-	const [credentials, setCredentials] = useState([]);
-	const [gitSyncs, setGitSyncs] = useState([]);
-	const [gitCredentials, setGitCredentials] = useState([]);
+        const [jiraSyncs, setJiraSyncs] = useState([]);
+        const [confluenceSyncs, setConfluenceSyncs] = useState([]);
+        const [credentials, setCredentials] = useState([]);
+        const [gitSyncs, setGitSyncs] = useState([]);
+        const [gitCredentials, setGitCredentials] = useState([]);
+
+        const [jiraFormMessage, setJiraFormMessage] = useState(null);
+        const [confluenceFormMessage, setConfluenceFormMessage] = useState(null);
+        const [gitFormMessage, setGitFormMessage] = useState(null);
 
 	const [newJira, setNewJira] = useState({
 		board_url: "",
@@ -162,17 +168,23 @@ function ChatBotSyncs() {
 					}
 
 					const terminalStatuses = ["succeeded", "failed"];
-					if (
-						terminalStatuses.includes(data.job_status) ||
-						terminalStatuses.includes(data.status)
-					) {
-						stopPolling(key);
-						if (data.job_status === "failed" || data.status === "failed") {
-							window.alert(data.job_message || data.message || "Sync failed.");
-						}
-						await loadData();
-						return;
-					}
+                                        if (
+                                                terminalStatuses.includes(data.job_status) ||
+                                                terminalStatuses.includes(data.status)
+                                        ) {
+                                                stopPolling(key);
+                                                if (data.job_status === "failed" || data.status === "failed") {
+                                                        notify({
+                                                                type: "error",
+                                                                message:
+                                                                        data.job_message ||
+                                                                        data.message ||
+                                                                        "Sync failed.",
+                                                        });
+                                                }
+                                                await loadData();
+                                                return;
+                                        }
 				} catch (error) {
 					console.error("Error polling sync status", error);
 					stopPolling(key);
@@ -195,8 +207,8 @@ function ChatBotSyncs() {
 			}));
 			await poll();
 		},
-		[chatBotId, loadData, stopPolling, updateSync]
-	);
+                [chatBotId, loadData, notify, stopPolling, updateSync]
+        );
 
 	useEffect(() => {
 		loadData();
@@ -282,70 +294,87 @@ function ChatBotSyncs() {
 					},
 				}));
 				await pollStatus(type, id, data.job_id);
-			} catch (error) {
-				console.error("Error triggering sync", error);
-				window.alert(
-					"Failed to queue sync job. Please check the configuration and try again."
-				);
-			}
-		},
-		[chatBotId, pollStatus, updateSync]
-	);
+                        } catch (error) {
+                                console.error("Error triggering sync", error);
+                                notify({
+                                        type: "error",
+                                        message:
+                                                "Failed to queue sync job. Please check the configuration and try again.",
+                                });
+                        }
+                },
+                [chatBotId, notify, pollStatus, updateSync]
+        );
 
-	const submitJira = async (e) => {
-		await handleJiraSubmit({
-			event: e,
-			newJira,
-			chatBotId,
-			apiClient: api,
-			alertFn: window.alert,
-			resetForm: () =>
-				setNewJira({
-					board_url: "",
-					credential_id: "",
-					sync_interval: "manual",
-				}),
-			reload: loadData,
-			logError: (err) => console.error("Error submitting Jira sync", err),
-		});
-	};
+        const submitJira = async (e) => {
+                const result = await handleJiraSubmit({
+                        event: e,
+                        newJira,
+                        chatBotId,
+                        apiClient: api,
+                        notifier: notify,
+                        resetForm: () =>
+                                setNewJira({
+                                        board_url: "",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (err) => console.error("Error submitting Jira sync", err),
+                });
+                if (result?.reason === "missing-credential" && result?.notification) {
+                        setJiraFormMessage(result.notification);
+                } else {
+                        setJiraFormMessage(null);
+                }
+        };
 
-	const submitConfluence = async (e) => {
-		await handleConfluenceSubmit({
-			event: e,
-			newConfluence,
-			chatBotId,
-			apiClient: api,
-			alertFn: window.alert,
-			resetForm: () =>
-				setNewConfluence({
-					space_url: "",
-					credential_id: "",
-					sync_interval: "manual",
-				}),
-			reload: loadData,
-			logError: (err) => console.error("Error submitting Confluence sync", err),
-		});
-	};
+        const submitConfluence = async (e) => {
+                const result = await handleConfluenceSubmit({
+                        event: e,
+                        newConfluence,
+                        chatBotId,
+                        apiClient: api,
+                        notifier: notify,
+                        resetForm: () =>
+                                setNewConfluence({
+                                        space_url: "",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (err) => console.error("Error submitting Confluence sync", err),
+                });
+                if (result?.reason === "missing-credential" && result?.notification) {
+                        setConfluenceFormMessage(result.notification);
+                } else {
+                        setConfluenceFormMessage(null);
+                }
+        };
 
-	const submitGit = async (e) => {
-		await handleGitSubmit({
-			event: e,
-			newGit,
-			chatBotId,
-			apiClient: api,
-			alertFn: window.alert,
-			resetForm: () =>
-				setNewGit({
-					repo_full_name: "",
-					branch: "main",
-					credential_id: "",
-					sync_interval: "manual",
-				}),
-			reload: loadData,
-			logError: (error) => console.error("Error submitting Git sync", error),
-		});
-	};
+        const submitGit = async (e) => {
+                const result = await handleGitSubmit({
+                        event: e,
+                        newGit,
+                        chatBotId,
+                        apiClient: api,
+                        notifier: notify,
+                        resetForm: () =>
+                                setNewGit({
+                                        repo_full_name: "",
+                                        branch: "main",
+                                        credential_id: "",
+                                        sync_interval: "manual",
+                                }),
+                        reload: loadData,
+                        logError: (error) => console.error("Error submitting Git sync", error),
+                });
+                if (result?.reason === "missing-credential" && result?.notification) {
+                        setGitFormMessage(result.notification);
+                } else {
+                        setGitFormMessage(null);
+                }
+        };
 
 	const deleteJira = async (id) => {
 		await api.delete(`/chatBots/${chatBotId}/jiraSyncs/${id}/`);
@@ -462,27 +491,46 @@ function ChatBotSyncs() {
 						setNewJira({ ...newJira, board_url: e.target.value })
 					}
 				/>
-				<select
-					value={newJira.credential_id}
-					onChange={(e) =>
-						setNewJira({
-							...newJira,
-							credential_id: parseInt(e.target.value, 10),
-						})
-					}
-				>
-					<option value="">Select Credential</option>
-					{credentials.map((cred) => (
-						<option key={cred.id} value={cred.id}>
-							{cred.name}
-						</option>
-					))}
-				</select>
-				<select
-					value={newJira.sync_interval}
-					onChange={(e) =>
-						setNewJira({ ...newJira, sync_interval: e.target.value })
-					}
+                                <select
+                                        value={newJira.credential_id}
+                                        onChange={(e) => {
+                                                const value = e.target.value;
+                                                setNewJira({
+                                                        ...newJira,
+                                                        credential_id: value ? parseInt(value, 10) : "",
+                                                });
+                                                if (jiraFormMessage) {
+                                                        setJiraFormMessage(null);
+                                                }
+                                        }}
+                                >
+                                        <option value="">Select Credential</option>
+                                        {credentials.map((cred) => (
+                                                <option key={cred.id} value={cred.id}>
+                                                        {cred.name}
+                                                </option>
+                                        ))}
+                                </select>
+                                {jiraFormMessage?.placement === "inline" && (
+                                        <div
+                                                style={{
+                                                        marginTop: "0.5rem",
+                                                        padding: "0.5rem 0.75rem",
+                                                        borderRadius: "0.375rem",
+                                                        background: "#fdecea",
+                                                        border: "1px solid #f28b82",
+                                                        color: "#b71c1c",
+                                                        fontSize: "0.85rem",
+                                                }}
+                                        >
+                                                {jiraFormMessage.message}
+                                        </div>
+                                )}
+                                <select
+                                        value={newJira.sync_interval}
+                                        onChange={(e) =>
+                                                setNewJira({ ...newJira, sync_interval: e.target.value })
+                                        }
 				>
 					<option value="manual">Manual</option>
 					<option value="daily">Daily</option>
@@ -588,27 +636,46 @@ function ChatBotSyncs() {
 						setNewConfluence({ ...newConfluence, space_url: e.target.value })
 					}
 				/>
-				<select
-					value={newConfluence.credential_id}
-					onChange={(e) =>
-						setNewConfluence({
-							...newConfluence,
-							credential_id: parseInt(e.target.value, 10),
-						})
-					}
-				>
-					<option value="">Select Credential</option>
-					{credentials.map((cred) => (
-						<option key={cred.id} value={cred.id}>
-							{cred.name}
-						</option>
-					))}
-				</select>
-				<select
-					value={newConfluence.sync_interval}
-					onChange={(e) =>
-						setNewConfluence({
-							...newConfluence,
+                                <select
+                                        value={newConfluence.credential_id}
+                                        onChange={(e) => {
+                                                const value = e.target.value;
+                                                setNewConfluence({
+                                                        ...newConfluence,
+                                                        credential_id: value ? parseInt(value, 10) : "",
+                                                });
+                                                if (confluenceFormMessage) {
+                                                        setConfluenceFormMessage(null);
+                                                }
+                                        }}
+                                >
+                                        <option value="">Select Credential</option>
+                                        {credentials.map((cred) => (
+                                                <option key={cred.id} value={cred.id}>
+                                                        {cred.name}
+                                                </option>
+                                        ))}
+                                </select>
+                                {confluenceFormMessage?.placement === "inline" && (
+                                        <div
+                                                style={{
+                                                        marginTop: "0.5rem",
+                                                        padding: "0.5rem 0.75rem",
+                                                        borderRadius: "0.375rem",
+                                                        background: "#fdecea",
+                                                        border: "1px solid #f28b82",
+                                                        color: "#b71c1c",
+                                                        fontSize: "0.85rem",
+                                                }}
+                                        >
+                                                {confluenceFormMessage.message}
+                                        </div>
+                                )}
+                                <select
+                                        value={newConfluence.sync_interval}
+                                        onChange={(e) =>
+                                                setNewConfluence({
+                                                        ...newConfluence,
 							sync_interval: e.target.value,
 						})
 					}
@@ -725,27 +792,46 @@ function ChatBotSyncs() {
 					value={newGit.branch}
 					onChange={(e) => setNewGit({ ...newGit, branch: e.target.value })}
 				/>
-				<select
-					value={newGit.credential_id}
-					onChange={(e) =>
-						setNewGit({
-							...newGit,
-							credential_id: parseInt(e.target.value, 10),
-						})
-					}
-				>
-					<option value="">Select credential</option>
-					{gitCredentials.map((c) => (
-						<option key={c.id} value={c.id}>
-							{c.name}
-						</option>
-					))}
-				</select>
-				<select
-					value={newGit.sync_interval}
-					onChange={(e) =>
-						setNewGit({ ...newGit, sync_interval: e.target.value })
-					}
+                                <select
+                                        value={newGit.credential_id}
+                                        onChange={(e) => {
+                                                const value = e.target.value;
+                                                setNewGit({
+                                                        ...newGit,
+                                                        credential_id: value ? parseInt(value, 10) : "",
+                                                });
+                                                if (gitFormMessage) {
+                                                        setGitFormMessage(null);
+                                                }
+                                        }}
+                                >
+                                        <option value="">Select credential</option>
+                                        {gitCredentials.map((c) => (
+                                                <option key={c.id} value={c.id}>
+                                                        {c.name}
+                                                </option>
+                                        ))}
+                                </select>
+                                {gitFormMessage?.placement === "inline" && (
+                                        <div
+                                                style={{
+                                                        marginTop: "0.5rem",
+                                                        padding: "0.5rem 0.75rem",
+                                                        borderRadius: "0.375rem",
+                                                        background: "#fdecea",
+                                                        border: "1px solid #f28b82",
+                                                        color: "#b71c1c",
+                                                        fontSize: "0.85rem",
+                                                }}
+                                        >
+                                                {gitFormMessage.message}
+                                        </div>
+                                )}
+                                <select
+                                        value={newGit.sync_interval}
+                                        onChange={(e) =>
+                                                setNewGit({ ...newGit, sync_interval: e.target.value })
+                                        }
 				>
 					<option value="manual">Manual</option>
 					<option value="daily">Daily</option>
