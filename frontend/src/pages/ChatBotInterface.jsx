@@ -3,6 +3,8 @@ import { useState } from "react";
 import api from "../api/axios";
 import { buildChatRequest } from "../utils/chatHistory.js";
 import { processFeedbackCommand } from "../utils/feedback.js";
+import ConfidenceBadge from "../components/ConfidenceBadge.jsx";
+import SourceChip from "../components/SourceChip.jsx";
 
 function ChatBotPage({ apiClient = api, chatbotId: overrideId }) {
         const params = useParams();
@@ -10,6 +12,95 @@ function ChatBotPage({ apiClient = api, chatbotId: overrideId }) {
         const [query, setQuery] = useState("");
         const [messages, setMessages] = useState([]);
         const [notice, setNotice] = useState("");
+
+        const runChatRequest = async (queryText, options = {}) => {
+                const { existingRequestId = null, skipMessageCreation = false, historyMessages } = options;
+                const trimmedQuery = queryText.trim();
+                if (!trimmedQuery) {
+                        return;
+                }
+
+                const requestId =
+                        existingRequestId ??
+                        `${Date.now()}-${Math.random()
+                                .toString(36)
+                                .slice(2)}`;
+
+                const { url, body } = buildChatRequest({
+                        id,
+                        messages: historyMessages ?? messages,
+                        query: trimmedQuery,
+                });
+
+                if (!skipMessageCreation) {
+                        setMessages((prev) => [
+                                ...prev,
+                                { role: "user", content: trimmedQuery, requestId },
+                                {
+                                        role: "assistant",
+                                        content: "",
+                                        requestId,
+                                        pending: true,
+                                        error: false,
+                                        sources: [],
+                                        confidence: null,
+                                        retrievalConfidence: null,
+                                        responseMetadata: null,
+                                        query: trimmedQuery,
+                                },
+                        ]);
+                        setQuery("");
+                }
+
+                try {
+                        const res = await apiClient.post(url, body);
+                        const data = res?.data ?? {};
+                        const answer = data.answer ?? "";
+                        setMessages((prev) =>
+                                prev.map((message) =>
+                                        message.role === "assistant" && message.requestId === requestId
+                                                ? {
+                                                          ...message,
+                                                          content: answer,
+                                                          pending: false,
+                                                          error: false,
+                                                          sources: Array.isArray(data.sources)
+                                                                  ? data.sources
+                                                                  : [],
+                                                          confidence:
+                                                                  typeof data.confidence === "number"
+                                                                          ? data.confidence
+                                                                          : null,
+                                                          retrievalConfidence:
+                                                                  typeof data.retrieval_confidence === "number"
+                                                                          ? data.retrieval_confidence
+                                                                          : null,
+                                                          responseMetadata: data,
+                                                  }
+                                                : message,
+                                ),
+                        );
+                } catch (err) {
+                        console.error("Chat error:", err);
+                        setMessages((prev) =>
+                                prev.map((message) =>
+                                        message.role === "assistant" && message.requestId === requestId
+                                                ? {
+                                                          ...message,
+                                                          pending: false,
+                                                          error: true,
+                                                          content:
+                                                                  "Unable to retrieve a response. Please try again.",
+                                                          sources: [],
+                                                          confidence: null,
+                                                          retrievalConfidence: null,
+                                                          responseMetadata: null,
+                                                  }
+                                                : message,
+                                ),
+                        );
+                }
+        };
 
         const sendQuery = async () => {
                 const trimmedQuery = query.trim();
@@ -27,65 +118,45 @@ function ChatBotPage({ apiClient = api, chatbotId: overrideId }) {
                 }
 
                 setNotice("");
+                await runChatRequest(trimmedQuery);
+        };
 
-                const { url, body } = buildChatRequest({
-                        id,
-                        messages,
-                        query: trimmedQuery,
+        const retryRequest = async (requestId) => {
+                let retryQuery = "";
+                let updatedMessages = messages;
+                setMessages((prev) => {
+                        updatedMessages = prev.map((message) => {
+                                if (message.role === "assistant" && message.requestId === requestId) {
+                                        retryQuery = message.query ?? "";
+                                        return {
+                                                ...message,
+                                                pending: true,
+                                                error: false,
+                                                content: "",
+                                                sources: [],
+                                                confidence: null,
+                                                retrievalConfidence: null,
+                                                responseMetadata: null,
+                                        };
+                                }
+                                return message;
+                        });
+                        return updatedMessages;
                 });
 
-                const requestId = `${Date.now()}-${Math.random()
-                        .toString(36)
-                        .slice(2)}`;
-
-                setMessages((prev) => [
-                        ...prev,
-                        { role: "user", content: trimmedQuery, requestId },
-                        {
-                                role: "assistant",
-                                content: "",
-                                requestId,
-                                pending: true,
-                        },
-                ]);
-                setQuery("");
-
-                try {
-                        const res = await apiClient.post(url, body);
-                        const answer = res?.data?.answer ?? "";
-                        setMessages((prev) =>
-                                prev.map((message) =>
-                                        message.role === "assistant" &&
-                                        message.requestId === requestId
-                                                ? {
-                                                          role: "assistant",
-                                                          content: answer,
-                                                          requestId,
-                                                  }
-                                                : message,
-                                ),
-                        );
-                } catch (err) {
-                        console.error("Chat error:", err);
-                        setMessages((prev) =>
-                                prev.map((message) =>
-                                        message.role === "assistant" &&
-                                        message.requestId === requestId
-                                                ? {
-                                                          role: "assistant",
-                                                          content:
-                                                                  "Unable to retrieve a response. Please try again.",
-                                                          requestId,
-                                                          error: true,
-                                                  }
-                                                : message,
-                                ),
-                        );
+                if (!retryQuery) {
+                        return;
                 }
+
+                await runChatRequest(retryQuery, {
+                        existingRequestId: requestId,
+                        skipMessageCreation: true,
+                        historyMessages: updatedMessages,
+                });
         };
 
         return (
-                <div style={{ padding: "2rem" }}>
+                <div className="chat-page" style={{ padding: "2rem" }}>
                         <h2>Chat with Bot {id}</h2>
                         {notice ? (
                                 <div
@@ -102,28 +173,64 @@ function ChatBotPage({ apiClient = api, chatbotId: overrideId }) {
                                         {notice}
                                 </div>
                         ) : null}
-                        <div
-                                style={{
-                                        border: "1px solid #ccc",
-                                        padding: "1rem",
-                                        height: "300px",
-					overflowY: "auto",
-				}}
-			>
-                                {messages.map((m, i) => (
-                                        <div key={i}>
-                                                <strong>{m.role}:</strong> {m.content}
+                        <div className="chat-window">
+                                {messages.map((message, index) => (
+                                        <div
+                                                key={`${message.requestId ?? index}-${message.role}-${index}`}
+                                                className={`message-bubble ${message.role}`}
+                                        >
+                                                <div className="message-role">{message.role}</div>
+                                                {message.pending ? (
+                                                        <div className="pending-container">
+                                                                <span className="chat-spinner" aria-label="Loading" />
+                                                                <span className="pending-text">Thinking...</span>
+                                                        </div>
+                                                ) : message.error ? (
+                                                        <div className="error-container">
+                                                                <p>{message.content}</p>
+                                                                <button
+                                                                        type="button"
+                                                                        className="retry-button"
+                                                                        onClick={() => retryRequest(message.requestId)}
+                                                                >
+                                                                        Retry
+                                                                </button>
+                                                        </div>
+                                                ) : (
+                                                        <p>{message.content}</p>
+                                                )}
+                                                {!message.pending && !message.error && message.role === "assistant" ? (
+                                                        <div className="message-metadata">
+                                                                <ConfidenceBadge confidence={message.confidence} />
+                                                                {Array.isArray(message.sources) && message.sources.length ? (
+                                                                        <div className="chat-sources">
+                                                                                {message.sources.map((source, sourceIndex) => (
+                                                                                        <SourceChip
+                                                                                                // eslint-disable-next-line react/no-array-index-key
+                                                                                                key={`${message.requestId}-source-${sourceIndex}`}
+                                                                                                source={source}
+                                                                                        />
+                                                                                ))}
+                                                                        </div>
+                                                                ) : null}
+                                                        </div>
+                                                ) : null}
                                         </div>
                                 ))}
-			</div>
-			<input
-				value={query}
-				onChange={(e) => setQuery(e.target.value)}
-				placeholder="Ask a question..."
-			/>
-			<button onClick={sendQuery}>Send</button>
-		</div>
-	);
+                        </div>
+                        <div className="chat-input-row">
+                                <input
+                                        value={query}
+                                        onChange={(e) => setQuery(e.target.value)}
+                                        placeholder="Ask a question..."
+                                        className="chat-input"
+                                />
+                                <button type="button" onClick={sendQuery} className="send-button">
+                                        Send
+                                </button>
+                        </div>
+                </div>
+        );
 }
 
 export default ChatBotPage;
