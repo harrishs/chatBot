@@ -40,3 +40,166 @@
 .read-the-docs {
   color: #888;
 }
+
+.chat-page {
+  max-width: 720px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.chat-window {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 1rem;
+  height: 320px;
+  overflow-y: auto;
+  background-color: #ffffff;
+  margin-bottom: 1rem;
+}
+
+.message-bubble {
+  background-color: #f9fafb;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.message-bubble.user {
+  background-color: #eff6ff;
+}
+
+.message-bubble.assistant {
+  background-color: #f5f3ff;
+}
+
+.message-role {
+  font-weight: 600;
+  color: #4b5563;
+  text-transform: capitalize;
+  margin-bottom: 0.5rem;
+}
+
+.pending-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #6b7280;
+}
+
+.pending-text {
+  font-style: italic;
+}
+
+@keyframes chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chat-spinner {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  border: 2px solid #c7d2fe;
+  border-top-color: #4338ca;
+  animation: chat-spin 0.9s linear infinite;
+  display: inline-block;
+}
+
+.error-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: #b91c1c;
+}
+
+.retry-button {
+  align-self: flex-start;
+  background-color: #ef4444;
+  color: #ffffff;
+  border: none;
+  padding: 0.35rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.retry-button:hover {
+  background-color: #dc2626;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.chat-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+}
+
+.send-button {
+  background-color: #4f46e5;
+  color: #ffffff;
+  border: none;
+  padding: 0.5rem 1.25rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.send-button:hover {
+  background-color: #4338ca;
+}
+
+.message-metadata {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chat-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.source-chip {
+  text-decoration: none;
+}
+
+.confidence-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.confidence-label {
+  font-size: 0.85rem;
+  color: #4338ca;
+  font-weight: 600;
+}
+
+.confidence-meter {
+  width: 100%;
+  height: 6px;
+  background-color: #e0e7ff;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.confidence-meter__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #c7d2fe, #4338ca);
+}
+
+.error-container p {
+  margin: 0;
+}
+
+.message-bubble p {
+  margin: 0;
+}
