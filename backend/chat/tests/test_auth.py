@@ -42,6 +42,11 @@ class AuthenticationFlowTests(TestCase):
 
         self.assertEqual(session_response.status_code, status.HTTP_200_OK)
         self.assertEqual(session_response.data['username'], self.user.username)
+        self.assertIn('is_staff', session_response.data)
+        self.assertEqual(session_response.data['is_staff'], self.user.is_staff)
+        self.assertIn('can_manage_users', session_response.data)
+        expected_manage_users = self.user.is_staff or getattr(self.user, 'role', User.Role.ADMIN) == User.Role.ADMIN
+        self.assertEqual(session_response.data['can_manage_users'], expected_manage_users)
 
     def test_logout_clears_session_cookie_and_denies_session(self):
         self.client.post(
