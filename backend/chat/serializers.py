@@ -5,14 +5,30 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
+    can_manage_users = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'company', 'password', 'role']
+        fields = [
+            'id',
+            'username',
+            'email',
+            'company',
+            'password',
+            'role',
+            'is_staff',
+            'can_manage_users',
+        ]
         extra_kwargs = {
             'password': {'write_only': True},
             'company': {'read_only': True},
             'role': {'required': False},
+            'is_staff': {'read_only': True},
         }
+
+    def get_can_manage_users(self, obj):
+        role = getattr(obj, 'role', None)
+        return bool(obj.is_staff or role == User.Role.ADMIN)
 
     def create(self, validated_data):
         password = validated_data.pop('password')
