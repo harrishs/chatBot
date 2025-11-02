@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import api from "../api/axios";
 import { Link } from "react-router-dom";
+import { useAuth } from "../context/AuthContext.jsx";
 
 function ChatBots() {
-	const [chatbots, setChatbots] = useState([]);
-	const [name, setName] = useState("");
-	const [description, setDescription] = useState("");
-	const [editingId, setEditingId] = useState(null);
+        const [chatbots, setChatbots] = useState([]);
+        const [name, setName] = useState("");
+        const [description, setDescription] = useState("");
+        const [editingId, setEditingId] = useState(null);
+        const { user } = useAuth();
+        const canManage = user?.is_staff || user?.role === "admin";
 
 	const fetchChatbots = async () => {
 		try {
@@ -17,9 +20,17 @@ function ChatBots() {
 		}
 	};
 
-	useEffect(() => {
-		fetchChatbots();
-	}, []);
+        useEffect(() => {
+                fetchChatbots();
+        }, []);
+
+        useEffect(() => {
+                if (!canManage) {
+                        setEditingId(null);
+                        setName("");
+                        setDescription("");
+                }
+        }, [canManage]);
 
 	const handleSubmit = async (e) => {
 		e.preventDefault();
@@ -58,64 +69,84 @@ function ChatBots() {
 		}
 	};
 
-	return (
-		<div style={{ padding: "2rem" }}>
-			<h2>{editingId ? "Edit ChatBot" : "Create ChatBot"}</h2>
+        return (
+                <div style={{ padding: "2rem" }}>
+                        <h2>ChatBots</h2>
+                        {!canManage && user && (
+                                <p style={{ marginTop: "1rem", color: "#555" }}>
+                                        You have read-only access. Contact an administrator to
+                                        manage chatbots.
+                                </p>
+                        )}
 
-			<form onSubmit={handleSubmit} style={{ marginBottom: "2rem" }}>
-				<div>
-					<label>Name:</label>
-					<br />
-					<input
-						value={name}
-						onChange={(e) => setName(e.target.value)}
-						required
-					/>
-				</div>
-				<div>
-					<label>Description:</label>
-					<br />
-					<textarea
-						value={description}
-						onChange={(e) => setDescription(e.target.value)}
-					/>
-				</div>
-				<button type="submit">{editingId ? "Update" : "Create"}</button>
-				{editingId && (
-					<button
-						type="button"
-						onClick={() => {
-							setEditingId(null);
-							setName("");
-							setDescription("");
-						}}
-					>
-						Cancel
-					</button>
-				)}
-			</form>
+                        {canManage && (
+                                <form onSubmit={handleSubmit} style={{ marginBottom: "2rem" }}>
+                                        <div>
+                                                <label>Name:</label>
+                                                <br />
+                                                <input
+                                                        value={name}
+                                                        onChange={(e) => setName(e.target.value)}
+                                                        required
+                                                />
+                                        </div>
+                                        <div>
+                                                <label>Description:</label>
+                                                <br />
+                                                <textarea
+                                                        value={description}
+                                                        onChange={(e) => setDescription(e.target.value)}
+                                                />
+                                        </div>
+                                        <button type="submit">
+                                                {editingId ? "Update" : "Create"}
+                                        </button>
+                                        {editingId && (
+                                                <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                                setEditingId(null);
+                                                                setName("");
+                                                                setDescription("");
+                                                        }}
+                                                >
+                                                        Cancel
+                                                </button>
+                                        )}
+                                </form>
+                        )}
 
-			<ul>
-				{chatbots.map((bot) => (
-					<li key={bot.id}>
-						<strong>{bot.name}</strong>
-						<br />
-						<small>{bot.description}</small>
-						<br />
-						<button onClick={() => handleEdit(bot)}>Edit</button>
-						<Link to={`/chatbots/${bot.id}`}>💬 Open Chat</Link>
-						<Link to={`/chatbots/${bot.id}/syncs`}>🔗 Manage Syncs</Link>
-						<button
-							onClick={() => handleDelete(bot.id)}
-							style={{ marginLeft: "0.5rem" }}
-						>
-							Delete
-						</button>
-					</li>
-				))}
-			</ul>
-		</div>
-	);
+                        <ul>
+                                {chatbots.map((bot) => (
+                                        <li key={bot.id}>
+                                                <strong>{bot.name}</strong>
+                                                <br />
+                                                <small>{bot.description}</small>
+                                                <br />
+                                                <Link to={`/chatbots/${bot.id}`}>💬 Open Chat</Link>
+                                                <Link to={`/chatbots/${bot.id}/syncs`}>
+                                                        🔗 Manage Syncs
+                                                </Link>
+                                                {canManage && (
+                                                        <>
+                                                                <button
+                                                                        onClick={() => handleEdit(bot)}
+                                                                >
+                                                                        Edit
+                                                                </button>
+                                                                <button
+                                                                        onClick={() => handleDelete(bot.id)}
+                                                                        style={{ marginLeft: "0.5rem" }}
+                                                                >
+                                                                        Delete
+                                                                </button>
+                                                        </>
+                                                )}
+                                        </li>
+                                ))}
+                        </ul>
+                </div>
+        );
 }
 
 export default ChatBots;

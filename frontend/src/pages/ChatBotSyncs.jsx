@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import api from "../api/axios";
+import { useAuth } from "../context/AuthContext.jsx";
 import { handleGitSubmit } from "./gitSubmitHelper";
 import { handleJiraSubmit, handleConfluenceSubmit } from "./syncSubmitHelpers";
 
 function ChatBotSyncs() {
-	const { chatBotId } = useParams();
+        const { chatBotId } = useParams();
 
-	const [jiraSyncs, setJiraSyncs] = useState([]);
-	const [confluenceSyncs, setConfluenceSyncs] = useState([]);
+        const [jiraSyncs, setJiraSyncs] = useState([]);
+        const [confluenceSyncs, setConfluenceSyncs] = useState([]);
 	const [credentials, setCredentials] = useState([]);
 	const [gitSyncs, setGitSyncs] = useState([]);
 	const [gitCredentials, setGitCredentials] = useState([]);
@@ -42,17 +43,19 @@ function ChatBotSyncs() {
 		credential_id: "",
 		sync_interval: "manual",
 	});
-	const [editingGit, setEditingGit] = useState(null);
-	const [editingGitData, setEditingGitData] = useState({
-		repo_full_name: "",
-		branch: "main",
-		credential_id: "",
-		sync_interval: "manual",
-	});
+        const [editingGit, setEditingGit] = useState(null);
+        const [editingGitData, setEditingGitData] = useState({
+                repo_full_name: "",
+                branch: "main",
+                credential_id: "",
+                sync_interval: "manual",
+        });
 
-	const [jobDetails, setJobDetails] = useState({});
-	const pollTimeouts = useRef({});
-	const activePolls = useRef({});
+        const [jobDetails, setJobDetails] = useState({});
+        const pollTimeouts = useRef({});
+        const activePolls = useRef({});
+        const { user } = useAuth();
+        const canManage = user?.is_staff || user?.role === "admin";
 
 	const makeJobKey = (type, id) => `${type}-${id}`;
 
@@ -198,9 +201,33 @@ function ChatBotSyncs() {
 		[chatBotId, loadData, stopPolling, updateSync]
 	);
 
-	useEffect(() => {
-		loadData();
-	}, [loadData]);
+        useEffect(() => {
+                loadData();
+        }, [loadData]);
+
+        useEffect(() => {
+                if (!canManage) {
+                        setEditingJira(null);
+                        setEditingConfluence(null);
+                        setEditingGit(null);
+                        setEditingJiraData({
+                                board_url: "",
+                                credential_id: "",
+                                sync_interval: "manual",
+                        });
+                        setEditingConfluenceData({
+                                space_url: "",
+                                credential_id: "",
+                                sync_interval: "manual",
+                        });
+                        setEditingGitData({
+                                repo_full_name: "",
+                                branch: "main",
+                                credential_id: "",
+                                sync_interval: "manual",
+                        });
+                }
+        }, [canManage]);
 
 	useEffect(
 		() => () => {
@@ -255,13 +282,14 @@ function ChatBotSyncs() {
 		});
 	}, [gitSyncs, pollStatus]);
 
-	const triggerSyncNow = useCallback(
-		async (type, id) => {
-			try {
-				const resource =
-					type === "jira"
-						? "jiraSyncs"
-						: type === "confluence"
+        const triggerSyncNow = useCallback(
+                async (type, id) => {
+                        if (!canManage) return;
+                        try {
+                                const resource =
+                                        type === "jira"
+                                                ? "jiraSyncs"
+                                                : type === "confluence"
 						? "confluenceSyncs"
 						: "gitRepoSyncs";
 				const endpoint = `/chatBots/${chatBotId}/${resource}/${id}/sync_now/`;
@@ -284,19 +312,20 @@ function ChatBotSyncs() {
 				await pollStatus(type, id, data.job_id);
 			} catch (error) {
 				console.error("Error triggering sync", error);
-				window.alert(
-					"Failed to queue sync job. Please check the configuration and try again."
-				);
-			}
-		},
-		[chatBotId, pollStatus, updateSync]
-	);
+                                window.alert(
+                                        "Failed to queue sync job. Please check the configuration and try again."
+                                );
+                        }
+                },
+                [canManage, chatBotId, pollStatus, updateSync]
+        );
 
-	const submitJira = async (e) => {
-		await handleJiraSubmit({
-			event: e,
-			newJira,
-			chatBotId,
+        const submitJira = async (e) => {
+                if (!canManage) return;
+                await handleJiraSubmit({
+                        event: e,
+                        newJira,
+                        chatBotId,
 			apiClient: api,
 			alertFn: window.alert,
 			resetForm: () =>
@@ -308,13 +337,14 @@ function ChatBotSyncs() {
 			reload: loadData,
 			logError: (err) => console.error("Error submitting Jira sync", err),
 		});
-	};
+        };
 
-	const submitConfluence = async (e) => {
-		await handleConfluenceSubmit({
-			event: e,
-			newConfluence,
-			chatBotId,
+        const submitConfluence = async (e) => {
+                if (!canManage) return;
+                await handleConfluenceSubmit({
+                        event: e,
+                        newConfluence,
+                        chatBotId,
 			apiClient: api,
 			alertFn: window.alert,
 			resetForm: () =>
@@ -326,13 +356,14 @@ function ChatBotSyncs() {
 			reload: loadData,
 			logError: (err) => console.error("Error submitting Confluence sync", err),
 		});
-	};
+        };
 
-	const submitGit = async (e) => {
-		await handleGitSubmit({
-			event: e,
-			newGit,
-			chatBotId,
+        const submitGit = async (e) => {
+                if (!canManage) return;
+                await handleGitSubmit({
+                        event: e,
+                        newGit,
+                        chatBotId,
 			apiClient: api,
 			alertFn: window.alert,
 			resetForm: () =>
@@ -345,48 +376,52 @@ function ChatBotSyncs() {
 			reload: loadData,
 			logError: (error) => console.error("Error submitting Git sync", error),
 		});
-	};
+        };
 
-	const deleteJira = async (id) => {
-		await api.delete(`/chatBots/${chatBotId}/jiraSyncs/${id}/`);
-		setEditingJira(null);
-		setEditingJiraData({
-			board_url: "",
+        const deleteJira = async (id) => {
+                if (!canManage) return;
+                await api.delete(`/chatBots/${chatBotId}/jiraSyncs/${id}/`);
+                setEditingJira(null);
+                setEditingJiraData({
+                        board_url: "",
 			credential_id: "",
 			sync_interval: "manual",
 		});
 		loadData();
-	};
+        };
 
-	const deleteConfluence = async (id) => {
-		await api.delete(`/chatBots/${chatBotId}/confluenceSyncs/${id}/`);
-		setEditingConfluence(null);
-		setEditingConfluenceData({
-			space_url: "",
+        const deleteConfluence = async (id) => {
+                if (!canManage) return;
+                await api.delete(`/chatBots/${chatBotId}/confluenceSyncs/${id}/`);
+                setEditingConfluence(null);
+                setEditingConfluenceData({
+                        space_url: "",
 			credential_id: "",
 			sync_interval: "manual",
 		});
 		loadData();
-	};
+        };
 
-	const deleteGit = async (id) => {
-		await api.delete(`/chatBots/${chatBotId}/gitRepoSyncs/${id}/`);
-		setEditingGit(null);
-		setEditingGitData({
-			repo_full_name: "",
+        const deleteGit = async (id) => {
+                if (!canManage) return;
+                await api.delete(`/chatBots/${chatBotId}/gitRepoSyncs/${id}/`);
+                setEditingGit(null);
+                setEditingGitData({
+                        repo_full_name: "",
 			branch: "",
 			credential_id: "",
 			sync_interval: "manual",
 		});
 		loadData();
-	};
+        };
 
-	const editJira = async (e) => {
-		e.preventDefault();
-		try {
-			await api.patch(
-				`/chatBots/${chatBotId}/jiraSyncs/${editingJira}/`,
-				editingJiraData
+        const editJira = async (e) => {
+                e.preventDefault();
+                if (!canManage) return;
+                try {
+                        await api.patch(
+                                `/chatBots/${chatBotId}/jiraSyncs/${editingJira}/`,
+                                editingJiraData
 			);
 			setEditingJira(null);
 			setEditingJiraData({
@@ -398,14 +433,15 @@ function ChatBotSyncs() {
 		} catch (err) {
 			console.error("Error editing Jira sync", err);
 		}
-	};
+        };
 
-	const editConfluence = async (e) => {
-		e.preventDefault();
-		try {
-			await api.patch(
-				`/chatBots/${chatBotId}/confluenceSyncs/${editingConfluence}/`,
-				editingConfluenceData
+        const editConfluence = async (e) => {
+                e.preventDefault();
+                if (!canManage) return;
+                try {
+                        await api.patch(
+                                `/chatBots/${chatBotId}/confluenceSyncs/${editingConfluence}/`,
+                                editingConfluenceData
 			);
 			setEditingConfluence(null);
 			setEditingConfluenceData({
@@ -417,14 +453,15 @@ function ChatBotSyncs() {
 		} catch (err) {
 			console.error("Error editing Confluence sync", err);
 		}
-	};
+        };
 
-	const editGit = async (e) => {
-		e.preventDefault();
-		try {
-			await api.patch(
-				`/chatBots/${chatBotId}/gitRepoSyncs/${editingGit}/`,
-				editingGitData
+        const editGit = async (e) => {
+                e.preventDefault();
+                if (!canManage) return;
+                try {
+                        await api.patch(
+                                `/chatBots/${chatBotId}/gitRepoSyncs/${editingGit}/`,
+                                editingGitData
 			);
 			setEditingGit(null);
 			setEditingGitData({
@@ -437,24 +474,35 @@ function ChatBotSyncs() {
 		} catch (err) {
 			console.error("Error editing Git sync", err);
 		}
-	};
+        };
 
-	const syncJiraNow = async (id) => {
-		await triggerSyncNow("jira", id);
-	};
+        const syncJiraNow = async (id) => {
+                if (!canManage) return;
+                await triggerSyncNow("jira", id);
+        };
 
-	const syncConfluenceNow = async (id) => {
-		await triggerSyncNow("confluence", id);
-	};
+        const syncConfluenceNow = async (id) => {
+                if (!canManage) return;
+                await triggerSyncNow("confluence", id);
+        };
 
-	const syncGitNow = async (id) => {
-		await triggerSyncNow("git", id);
-	};
+        const syncGitNow = async (id) => {
+                if (!canManage) return;
+                await triggerSyncNow("git", id);
+        };
 
-	return (
-		<div style={{ padding: "2rem" }}>
-			<h2>Jira Syncs</h2>
-			<form onSubmit={submitJira}>
+        return (
+                <div style={{ padding: "2rem" }}>
+                        <h2>ChatBot Syncs</h2>
+                        {!canManage && user && (
+                                <p style={{ marginTop: "1rem", color: "#555" }}>
+                                        You have read-only access. Contact an administrator to
+                                        manage sync configurations.
+                                </p>
+                        )}
+                        <h3>Jira Syncs</h3>
+                        {canManage && (
+                                <form onSubmit={submitJira}>
 				<input
 					placeholder="Jira Board URL"
 					value={newJira.board_url}
@@ -489,14 +537,15 @@ function ChatBotSyncs() {
 					<option value="weekly">Weekly</option>
 					<option value="monthly">Monthly</option>
 				</select>
-				<button type="submit">Add Jira Sync</button>
-			</form>
+                                <button type="submit">Add Jira Sync</button>
+                        </form>
+                        )}
 
 			<ul>
 				{jiraSyncs.map((sync) => (
 					<li key={sync.id}>
-						{editingJira === sync.id ? (
-							<form onSubmit={editJira}>
+                                                {canManage && editingJira === sync.id ? (
+                                                        <form onSubmit={editJira}>
 								<input
 									value={editingJiraData.board_url}
 									onChange={(e) =>
@@ -541,23 +590,27 @@ function ChatBotSyncs() {
 									Cancel
 								</button>
 							</form>
-						) : (
-							<>
-								{sync.board_url} (Credential: {sync.credential?.name})
-								<button
-									onClick={() => {
-										setEditingJira(sync.id);
-										setEditingJiraData({
-											board_url: sync.board_url,
-											credential_id: sync.credential?.id,
-											sync_interval: sync.sync_interval,
-										});
-									}}
-								>
-									Edit
-								</button>
-							</>
-						)}
+                                                ) : (
+                                                        <>
+                                                                {sync.board_url} (Credential: {sync.credential?.name})
+                                                                {canManage && (
+                                                                        <button
+                                                                                onClick={() => {
+                                                                                        setEditingJira(sync.id);
+                                                                                        setEditingJiraData({
+                                                                                                board_url: sync.board_url,
+                                                                                                credential_id:
+                                                                                                        sync.credential?.id,
+                                                                                                sync_interval:
+                                                                                                        sync.sync_interval,
+                                                                                        });
+                                                                                }}
+                                                                        >
+                                                                                Edit
+                                                                        </button>
+                                                                )}
+                                                        </>
+                                                )}
 						<div>
 							<strong>Status:</strong> {sync.sync_status || "idle"}
 							{jobDetails[makeJobKey("jira", sync.id)]?.isPolling && (
@@ -573,58 +626,71 @@ function ChatBotSyncs() {
 								</em>
 							</div>
 						)}
-						<button onClick={() => deleteJira(sync.id)}>Delete</button>
-						<button onClick={() => syncJiraNow(sync.id)}>Sync Now</button>
+                                                {canManage && (
+                                                        <>
+                                                                <button onClick={() => deleteJira(sync.id)}>
+                                                                        Delete
+                                                                </button>
+                                                                <button onClick={() => syncJiraNow(sync.id)}>
+                                                                        Sync Now
+                                                                </button>
+                                                        </>
+                                                )}
 					</li>
 				))}
 			</ul>
 
-			<h2>Confluence Syncs</h2>
-			<form onSubmit={submitConfluence}>
-				<input
-					placeholder="Confluence Space URL"
-					value={newConfluence.space_url}
-					onChange={(e) =>
-						setNewConfluence({ ...newConfluence, space_url: e.target.value })
-					}
-				/>
-				<select
-					value={newConfluence.credential_id}
-					onChange={(e) =>
-						setNewConfluence({
-							...newConfluence,
-							credential_id: parseInt(e.target.value, 10),
-						})
-					}
-				>
-					<option value="">Select Credential</option>
-					{credentials.map((cred) => (
-						<option key={cred.id} value={cred.id}>
-							{cred.name}
-						</option>
-					))}
-				</select>
-				<select
-					value={newConfluence.sync_interval}
-					onChange={(e) =>
-						setNewConfluence({
-							...newConfluence,
-							sync_interval: e.target.value,
-						})
-					}
-				>
-					<option value="manual">Manual</option>
-					<option value="daily">Daily</option>
-					<option value="weekly">Weekly</option>
-					<option value="monthly">Monthly</option>
-				</select>
-				<button type="submit">Add Confluence Sync</button>
-			</form>
+                        <h3>Confluence Syncs</h3>
+                        {canManage && (
+                                <form onSubmit={submitConfluence}>
+                                        <input
+                                                placeholder="Confluence Space URL"
+                                                value={newConfluence.space_url}
+                                                onChange={(e) =>
+                                                        setNewConfluence({
+                                                                ...newConfluence,
+                                                                space_url: e.target.value,
+                                                        })
+                                                }
+                                        />
+                                        <select
+                                                value={newConfluence.credential_id}
+                                                onChange={(e) =>
+                                                        setNewConfluence({
+                                                                ...newConfluence,
+                                                                credential_id: parseInt(e.target.value, 10),
+                                                        })
+                                                }
+                                        >
+                                                <option value="">Select Credential</option>
+                                                {credentials.map((cred) => (
+                                                        <option key={cred.id} value={cred.id}>
+                                                                {cred.name}
+                                                        </option>
+                                                ))}
+                                        </select>
+                                        <select
+                                                value={newConfluence.sync_interval}
+                                                onChange={(e) =>
+                                                        setNewConfluence({
+                                                                ...newConfluence,
+                                                                sync_interval: e.target.value,
+                                                        })
+                                                }
+                                        >
+                                                <option value="manual">Manual</option>
+                                                <option value="daily">Daily</option>
+                                                <option value="weekly">Weekly</option>
+                                                <option value="monthly">Monthly</option>
+                                        </select>
+                                        <button type="submit">Add Confluence Sync</button>
+                                </form>
+                        )}
 
 			<ul>
 				{confluenceSyncs.map((sync) => (
 					<li key={sync.id}>
-						{editingConfluence === sync.id ? (
+                                                {canManage && editingConfluence === sync.id ? (
 							<form onSubmit={editConfluence}>
 								<input
 									value={editingConfluenceData.space_url}
@@ -674,21 +740,25 @@ function ChatBotSyncs() {
 								</button>
 							</form>
 						) : (
-							<>
-								{sync.space_url} (Credential: {sync.credential?.name})
-								<button
-									onClick={() => {
-										setEditingConfluence(sync.id);
-										setEditingConfluenceData({
-											space_url: sync.space_url,
-											credential_id: sync.credential?.id,
-											sync_interval: sync.sync_interval,
-										});
-									}}
-								>
-									Edit
-								</button>
-							</>
+                                                        <>
+                                                                {sync.space_url} (Credential: {sync.credential?.name})
+                                                                {canManage && (
+                                                                        <button
+                                                                                onClick={() => {
+                                                                                        setEditingConfluence(sync.id);
+                                                                                        setEditingConfluenceData({
+                                                                                                space_url: sync.space_url,
+                                                                                                credential_id:
+                                                                                                        sync.credential?.id,
+                                                                                                sync_interval:
+                                                                                                        sync.sync_interval,
+                                                                                        });
+                                                                                }}
+                                                                        >
+                                                                                Edit
+                                                                        </button>
+                                                                )}
+                                                        </>
 						)}
 						<div>
 							<strong>Status:</strong> {sync.sync_status || "idle"}
@@ -705,60 +775,82 @@ function ChatBotSyncs() {
 								</em>
 							</div>
 						)}
-						<button onClick={() => deleteConfluence(sync.id)}>Delete</button>
-						<button onClick={() => syncConfluenceNow(sync.id)}>Sync Now</button>
+                                                {canManage && (
+                                                        <>
+                                                                <button
+                                                                        onClick={() => deleteConfluence(sync.id)}
+                                                                >
+                                                                        Delete
+                                                                </button>
+                                                                <button
+                                                                        onClick={() => syncConfluenceNow(sync.id)}
+                                                                >
+                                                                        Sync Now
+                                                                </button>
+                                                        </>
+                                                )}
 					</li>
 				))}
 			</ul>
 
-			<h2>Git Repository Syncs</h2>
-			<form onSubmit={submitGit}>
-				<input
-					placeholder="Repo Full Name (e.g., owner/repo)"
-					value={newGit.repo_full_name}
-					onChange={(e) =>
-						setNewGit({ ...newGit, repo_full_name: e.target.value })
-					}
-				/>
-				<input
-					placeholder="Branch"
-					value={newGit.branch}
-					onChange={(e) => setNewGit({ ...newGit, branch: e.target.value })}
-				/>
-				<select
-					value={newGit.credential_id}
-					onChange={(e) =>
-						setNewGit({
-							...newGit,
-							credential_id: parseInt(e.target.value, 10),
-						})
-					}
-				>
-					<option value="">Select credential</option>
-					{gitCredentials.map((c) => (
-						<option key={c.id} value={c.id}>
-							{c.name}
-						</option>
-					))}
-				</select>
-				<select
-					value={newGit.sync_interval}
-					onChange={(e) =>
-						setNewGit({ ...newGit, sync_interval: e.target.value })
-					}
-				>
-					<option value="manual">Manual</option>
-					<option value="daily">Daily</option>
-					<option value="weekly">Weekly</option>
-					<option value="monthly">Monthly</option>
-				</select>
-				<button type="submit">Add Git Sync</button>
-			</form>
+                        <h3>Git Repository Syncs</h3>
+                        {canManage && (
+                                <form onSubmit={submitGit}>
+                                        <input
+                                                placeholder="Repo Full Name (e.g., owner/repo)"
+                                                value={newGit.repo_full_name}
+                                                onChange={(e) =>
+                                                        setNewGit({
+                                                                ...newGit,
+                                                                repo_full_name: e.target.value,
+                                                        })
+                                                }
+                                        />
+                                        <input
+                                                placeholder="Branch"
+                                                value={newGit.branch}
+                                                onChange={(e) =>
+                                                        setNewGit({ ...newGit, branch: e.target.value })
+                                                }
+                                        />
+                                        <select
+                                                value={newGit.credential_id}
+                                                onChange={(e) =>
+                                                        setNewGit({
+                                                                ...newGit,
+                                                                credential_id: parseInt(e.target.value, 10),
+                                                        })
+                                                }
+                                        >
+                                                <option value="">Select credential</option>
+                                                {gitCredentials.map((c) => (
+                                                        <option key={c.id} value={c.id}>
+                                                                {c.name}
+                                                        </option>
+                                                ))}
+                                        </select>
+                                        <select
+                                                value={newGit.sync_interval}
+                                                onChange={(e) =>
+                                                        setNewGit({
+                                                                ...newGit,
+                                                                sync_interval: e.target.value,
+                                                        })
+                                                }
+                                        >
+                                                <option value="manual">Manual</option>
+                                                <option value="daily">Daily</option>
+                                                <option value="weekly">Weekly</option>
+                                                <option value="monthly">Monthly</option>
+                                        </select>
+                                        <button type="submit">Add Git Sync</button>
+                                </form>
+                        )}
 			<ul>
-				{gitSyncs.map((sync) => (
-					<li key={sync.id}>
-						{editingGit === sync.id ? (
-							<form onSubmit={editGit}>
+                                {gitSyncs.map((sync) => (
+                                        <li key={sync.id}>
+                                                {canManage && editingGit === sync.id ? (
+                                                        <form onSubmit={editGit}>
 								<input
 									value={editingGitData.repo_full_name}
 									onChange={(e) =>
@@ -812,25 +904,31 @@ function ChatBotSyncs() {
 									Cancel
 								</button>
 							</form>
-						) : (
-							<>
-								{sync.repo_full_name} - {sync.branch} (Credential:{" "}
-								{sync.credential?.name})
-								<button
-									onClick={() => {
-										setEditingGit(sync.id);
-										setEditingGitData({
-											repo_full_name: sync.repo_full_name,
-											branch: sync.branch,
-											credential_id: parseInt(sync.credential?.id),
-											sync_interval: sync.sync_interval,
-										});
-									}}
-								>
-									Edit
-								</button>
-							</>
-						)}
+                                                ) : (
+                                                        <>
+                                                                {sync.repo_full_name} - {sync.branch} (Credential:{" "}
+                                                                {sync.credential?.name})
+                                                                {canManage && (
+                                                                        <button
+                                                                                onClick={() => {
+                                                                                        setEditingGit(sync.id);
+                                                                                        setEditingGitData({
+                                                                                                repo_full_name:
+                                                                                                        sync.repo_full_name,
+                                                                                                branch: sync.branch,
+                                                                                                credential_id: parseInt(
+                                                                                                        sync.credential?.id,
+                                                                                                        10,
+                                                                                                ),
+                                                                                                sync_interval: sync.sync_interval,
+                                                                                        });
+                                                                                }}
+                                                                        >
+                                                                                Edit
+                                                                        </button>
+                                                                )}
+                                                        </>
+                                                )}
 						<div>
 							<strong>Status:</strong> {sync.sync_status || "idle"}
 							{jobDetails[makeJobKey("git", sync.id)]?.isPolling && (
@@ -846,8 +944,16 @@ function ChatBotSyncs() {
 								</em>
 							</div>
 						)}
-						<button onClick={() => deleteGit(sync.id)}>Delete</button>
-						<button onClick={() => syncGitNow(sync.id)}>Sync Now</button>
+                                                {canManage && (
+                                                        <>
+                                                                <button onClick={() => deleteGit(sync.id)}>
+                                                                        Delete
+                                                                </button>
+                                                                <button onClick={() => syncGitNow(sync.id)}>
+                                                                        Sync Now
+                                                                </button>
+                                                        </>
+                                                )}
 					</li>
 				))}
 			</ul>
