@@ -45,6 +45,26 @@ When deploying, ensure the environment variables are populated before running
 `docker compose -f docker-compose.prod.yml up -d` so every service receives the
 correct values.
 
+### Refreshing the frontend lockfile without Node installed locally
+
+If the EC2 host (or any deployment box) only builds the frontend through the
+Docker image and does not have Node/npm installed, you can still refresh
+`frontend/package-lock.json` using the `node:20` image. This is useful when the
+registry rotates tarball checksums and the lockfile needs to be regenerated so
+`npm ci` inside the Docker build stops failing with integrity errors.
+
+From the repository root run:
+
+```bash
+./frontend/scripts/refresh-lockfile.sh
+```
+
+The helper script mounts the frontend directory into a throwaway `node:20`
+container and runs `npm install --package-lock-only`, recomputing the integrity
+hashes without touching `node_modules`. Commit the updated lockfile afterwards
+and rebuild your frontend image (e.g. `docker compose build frontend --no-cache`)
+to pick up the refreshed metadata.
+
 ### Database migrations
 
 The backend entrypoint automatically runs `python manage.py migrate --noinput`
