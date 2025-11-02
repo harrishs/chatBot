@@ -10,9 +10,6 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-# Allow overriding the Node image tag (e.g., NODE_IMAGE=node:22 ./refresh-lockfile.sh)
-NODE_IMAGE="${NODE_IMAGE:-node:20}"
-
 # Use the current user/group when available so generated files are not owned by root.
 if command -v id >/dev/null 2>&1; then
   UID_FLAG="$(id -u)"
@@ -24,12 +21,12 @@ fi
 
 cd "${FRONTEND_DIR}"
 
-printf 'Regenerating package-lock.json with %s...\n' "${NODE_IMAGE}"
+echo "Regenerating package-lock.json with node:20 container..."
 docker run --rm \
   -u "${UID_FLAG}:${GID_FLAG}" \
   -v "${FRONTEND_DIR}:/app" \
   -w /app \
-  "${NODE_IMAGE}" \
-  bash -lc "set -e; echo 'node version: ' \\$(node --version); echo 'npm version: ' \\$(npm --version); npm install --package-lock-only"
+  node:20 \
+  npm install --package-lock-only "$@"
 
 echo "Done. Remember to commit the updated package-lock.json."

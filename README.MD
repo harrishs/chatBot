@@ -60,12 +60,10 @@ From the repository root run:
 ```
 
 The helper script mounts the frontend directory into a throwaway `node:20`
-container, prints the exact Node and npm versions it is using, and then runs
-`npm install --package-lock-only`, recomputing the integrity hashes without
-touching `node_modules`. If you need to test another runtime you can override
-the image via `NODE_IMAGE=node:22 ./frontend/scripts/refresh-lockfile.sh`.
-Commit the updated lockfile afterwards and rebuild your frontend image (e.g.
-`docker compose build frontend --no-cache`) to pick up the refreshed metadata.
+container and runs `npm install --package-lock-only`, recomputing the integrity
+hashes without touching `node_modules`. Commit the updated lockfile afterwards
+and rebuild your frontend image (e.g. `docker compose build frontend --no-cache`)
+to pick up the refreshed metadata.
 
 ### Database migrations
 
