@@ -7,7 +7,7 @@ function App() {
         const [users, setUsers] = useState([]);
         const navigate = useNavigate();
         const { logout, user } = useAuth();
-        const canManageUsers = user?.is_staff || user?.role === "admin";
+        const canManageUsers = user?.is_staff ?? user?.role === "admin";
 
         useEffect(() => {
                 if (!user) {

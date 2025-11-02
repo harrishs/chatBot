@@ -97,6 +97,8 @@ class UserViewSetPermissionTests(TestCase):
         )
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         managed_user_id = create_response.data["id"]
+        self.assertIn("is_staff", create_response.data)
+        self.assertFalse(create_response.data["is_staff"])
 
         patch_response = self.client.patch(
             reverse("user-detail", args=[managed_user_id]),
@@ -120,6 +122,8 @@ class UserViewSetPermissionTests(TestCase):
 
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         managed_user_id = create_response.data["id"]
+        self.assertIn("is_staff", create_response.data)
+        self.assertFalse(create_response.data["is_staff"])
 
         patch_response = self.client.patch(
             reverse("user-detail", args=[managed_user_id]),

@@ -23,12 +23,13 @@ class UserSerializer(serializers.ModelSerializer):
             'password': {'write_only': True},
             'company': {'read_only': True},
             'role': {'required': False},
-            'is_staff': {'read_only': True},
         }
+        read_only_fields = ('company', 'is_staff', 'can_manage_users')
 
     def get_can_manage_users(self, obj):
         role = getattr(obj, 'role', None)
-        return bool(obj.is_staff or role == User.Role.ADMIN)
+        is_staff = getattr(obj, 'is_staff', False)
+        return bool(is_staff or role == User.Role.ADMIN)
 
     def create(self, validated_data):
         password = validated_data.pop('password')
