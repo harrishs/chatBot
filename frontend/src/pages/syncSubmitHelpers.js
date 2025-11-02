@@ -10,7 +10,7 @@ export async function handleJiraSubmit({
         newJira,
         chatBotId,
         apiClient,
-        alertFn,
+        notifier,
         resetForm,
         reload,
         logError,
@@ -18,8 +18,12 @@ export async function handleJiraSubmit({
         event?.preventDefault?.();
 
         if (!newJira?.credential_id) {
-                alertFn?.(SYNC_MISSING_CREDENTIAL_MESSAGE);
-                return { success: false, reason: "missing-credential" };
+                const notification = {
+                        type: "error",
+                        message: SYNC_MISSING_CREDENTIAL_MESSAGE,
+                };
+                notifier?.(notification);
+                return { success: false, reason: "missing-credential", notification };
         }
 
         try {
@@ -35,8 +39,9 @@ export async function handleJiraSubmit({
                 if (typeof logError === "function") {
                         logError(error);
                 }
-                alertFn?.(JIRA_SUBMIT_ERROR_MESSAGE);
-                return { success: false, error };
+                const notification = { type: "error", message: JIRA_SUBMIT_ERROR_MESSAGE };
+                notifier?.(notification);
+                return { success: false, error, notification };
         }
 }
 
@@ -45,7 +50,7 @@ export async function handleConfluenceSubmit({
         newConfluence,
         chatBotId,
         apiClient,
-        alertFn,
+        notifier,
         resetForm,
         reload,
         logError,
@@ -53,8 +58,12 @@ export async function handleConfluenceSubmit({
         event?.preventDefault?.();
 
         if (!newConfluence?.credential_id) {
-                alertFn?.(SYNC_MISSING_CREDENTIAL_MESSAGE);
-                return { success: false, reason: "missing-credential" };
+                const notification = {
+                        type: "error",
+                        message: SYNC_MISSING_CREDENTIAL_MESSAGE,
+                };
+                notifier?.(notification);
+                return { success: false, reason: "missing-credential", notification };
         }
 
         try {
@@ -73,7 +82,11 @@ export async function handleConfluenceSubmit({
                 if (typeof logError === "function") {
                         logError(error);
                 }
-                alertFn?.(CONFLUENCE_SUBMIT_ERROR_MESSAGE);
-                return { success: false, error };
+                const notification = {
+                        type: "error",
+                        message: CONFLUENCE_SUBMIT_ERROR_MESSAGE,
+                };
+                notifier?.(notification);
+                return { success: false, error, notification };
         }
 }

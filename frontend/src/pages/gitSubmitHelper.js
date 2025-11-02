@@ -8,7 +8,7 @@ export async function handleGitSubmit({
         newGit,
         chatBotId,
         apiClient,
-        alertFn,
+        notifier,
         resetForm,
         reload,
         logError,
@@ -16,8 +16,12 @@ export async function handleGitSubmit({
         event?.preventDefault?.();
 
         if (!newGit?.credential_id) {
-                alertFn?.(GIT_MISSING_CREDENTIAL_MESSAGE);
-                return { success: false, reason: "missing-credential" };
+                const notification = {
+                        type: "error",
+                        message: GIT_MISSING_CREDENTIAL_MESSAGE,
+                };
+                notifier?.(notification);
+                return { success: false, reason: "missing-credential", notification };
         }
 
         try {
@@ -36,7 +40,8 @@ export async function handleGitSubmit({
                 if (typeof logError === "function") {
                         logError(error);
                 }
-                alertFn?.(GIT_SUBMIT_ERROR_MESSAGE);
-                return { success: false, error };
+                const notification = { type: "error", message: GIT_SUBMIT_ERROR_MESSAGE };
+                notifier?.(notification);
+                return { success: false, error, notification };
         }
 }
