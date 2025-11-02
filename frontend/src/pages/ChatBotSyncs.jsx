@@ -1,307 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import api from "../api/axios";
 import { useNotifications } from "../context/NotificationsContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { handleGitSubmit } from "./gitSubmitHelper";
 import { handleJiraSubmit, handleConfluenceSubmit } from "./syncSubmitHelpers";
 
-const SUMMARY_TYPE_METADATA = {
-        jira: { label: "Jira" },
-        confluence: { label: "Confluence" },
-        git: { label: "Git" },
-};
-
-const ACTIVE_SYNC_STATUSES = new Set(["queued", "running"]);
-const FAILED_SYNC_STATUS = "failed";
-
-const SUMMARY_TYPE_ORDER = ["jira", "confluence", "git"];
-
-const parseTimestamp = (value) => {
-        if (!value) {
-                return null;
-        }
-        const date = new Date(value);
-        if (Number.isNaN(date.getTime())) {
-                return null;
-        }
-        return date;
-};
-
-const normalizeTimestamp = (value) => {
-        const date = parseTimestamp(value);
-        if (!date) {
-                return null;
-        }
-        return date.toISOString();
-};
-
-const getSyncLabel = (sync, type) => {
-        if (type === "jira") {
-                return sync.board_url || "Jira board";
-        }
-        if (type === "confluence") {
-                return sync.space_url || "Confluence space";
-        }
-        if (type === "git") {
-                const repo = sync.repo_full_name || "Git repository";
-                const branch = sync.branch || "main";
-                return `${repo} (${branch})`;
-        }
-        return SUMMARY_TYPE_METADATA[type]?.label || "Sync";
-};
-
-const computeSummaryFromSyncs = (jira = [], confluence = [], git = []) => {
-        const breakdown = {
-                jira: { label: SUMMARY_TYPE_METADATA.jira.label, total: 0, running: 0, failing: 0 },
-                confluence: {
-                        label: SUMMARY_TYPE_METADATA.confluence.label,
-                        total: 0,
-                        running: 0,
-                        failing: 0,
-                },
-                git: { label: SUMMARY_TYPE_METADATA.git.label, total: 0, running: 0, failing: 0 },
-        };
-
-        const typedSyncs = [];
-
-        const addSync = (sync, type) => {
-                if (!sync) {
-                        return;
-                }
-                const status = sync.sync_status || "idle";
-                const entry = {
-                        type,
-                        id: sync.id,
-                        label: getSyncLabel(sync, type),
-                        status,
-                        lastSyncTime: normalizeTimestamp(sync.last_sync_time),
-                        nextSyncAt: normalizeTimestamp(sync.next_sync_at),
-                        message: sync.sync_status_message || "",
-                };
-                typedSyncs.push(entry);
-
-                const counts = breakdown[type];
-                counts.total += 1;
-                if (ACTIVE_SYNC_STATUSES.has(status)) {
-                        counts.running += 1;
-                }
-                if (status === FAILED_SYNC_STATUS) {
-                        counts.failing += 1;
-                }
-        };
-
-        jira.forEach((sync) => addSync(sync, "jira"));
-        confluence.forEach((sync) => addSync(sync, "confluence"));
-        git.forEach((sync) => addSync(sync, "git"));
-
-        const runningSyncs = typedSyncs.filter((sync) => ACTIVE_SYNC_STATUSES.has(sync.status)).length;
-        const failingSyncs = typedSyncs.filter((sync) => sync.status === FAILED_SYNC_STATUS).length;
-
-        let latestRun = null;
-        let nextScheduled = null;
-        let lastFailure = null;
-
-        typedSyncs.forEach((sync) => {
-                const lastSyncDate = parseTimestamp(sync.lastSyncTime);
-                if (lastSyncDate) {
-                        if (!latestRun || lastSyncDate > latestRun.rawDate) {
-                                latestRun = {
-                                        rawDate: lastSyncDate,
-                                        detail: {
-                                                type: sync.type,
-                                                id: sync.id,
-                                                label: sync.label,
-                                                timestamp: lastSyncDate.toISOString(),
-                                        },
-                                };
-                        }
-                }
-
-                const nextSyncDate = parseTimestamp(sync.nextSyncAt);
-                if (nextSyncDate) {
-                        if (!nextScheduled || nextSyncDate < nextScheduled.rawDate) {
-                                nextScheduled = {
-                                        rawDate: nextSyncDate,
-                                        detail: {
-                                                type: sync.type,
-                                                id: sync.id,
-                                                label: sync.label,
-                                                timestamp: nextSyncDate.toISOString(),
-                                        },
-                                };
-                        }
-                }
-
-                if (sync.status === FAILED_SYNC_STATUS) {
-                        const failureDate = lastSyncDate || parseTimestamp(sync.nextSyncAt);
-                        if (!lastFailure) {
-                                lastFailure = {
-                                        rawDate: failureDate,
-                                        detail: {
-                                                type: sync.type,
-                                                id: sync.id,
-                                                label: sync.label,
-                                                message: sync.message || "",
-                                                timestamp: failureDate ? failureDate.toISOString() : null,
-                                        },
-                                };
-                        } else if (failureDate && lastFailure.rawDate) {
-                                if (failureDate > lastFailure.rawDate) {
-                                        lastFailure = {
-                                                rawDate: failureDate,
-                                                detail: {
-                                                        type: sync.type,
-                                                        id: sync.id,
-                                                        label: sync.label,
-                                                        message: sync.message || "",
-                                                        timestamp: failureDate.toISOString(),
-                                                },
-                                        };
-                                }
-                        } else if (!lastFailure.rawDate && failureDate) {
-                                lastFailure = {
-                                        rawDate: failureDate,
-                                        detail: {
-                                                type: sync.type,
-                                                id: sync.id,
-                                                label: sync.label,
-                                                message: sync.message || "",
-                                                timestamp: failureDate.toISOString(),
-                                        },
-                                };
-                        }
-                }
-        });
-
-        return {
-                totalSyncs: typedSyncs.length,
-                runningSyncs,
-                failingSyncs,
-                latestRun: latestRun ? latestRun.detail : null,
-                nextScheduled: nextScheduled ? nextScheduled.detail : null,
-                lastFailure: lastFailure ? lastFailure.detail : null,
-                breakdown,
-        };
-};
-
-const adaptSummaryResponse = (data) => {
-        if (!data || typeof data !== "object") {
-                return null;
-        }
-
-        const mapDetail = (detail, includeMessage = false) => {
-                if (!detail || typeof detail !== "object") {
-                        return null;
-                }
-                const type = detail.type;
-                if (!type) {
-                        return null;
-                }
-                return {
-                        type,
-                        id: detail.id ?? null,
-                        label:
-                                detail.label ??
-                                SUMMARY_TYPE_METADATA[type]?.label ??
-                                SUMMARY_TYPE_METADATA.jira.label,
-                        timestamp: detail.timestamp ?? null,
-                        ...(includeMessage ? { message: detail.message ?? "" } : {}),
-                };
-        };
-
-        const sourceBreakdown = data.breakdown || {};
-        const breakdown = {};
-
-        SUMMARY_TYPE_ORDER.forEach((type) => {
-                const counts = sourceBreakdown[type] || {};
-                breakdown[type] = {
-                        label: SUMMARY_TYPE_METADATA[type].label,
-                        total: counts.total ?? 0,
-                        running: counts.running ?? 0,
-                        failing: counts.failing ?? 0,
-                };
-        });
-
-        return {
-                totalSyncs: data.total_syncs ?? 0,
-                runningSyncs: data.running_syncs ?? 0,
-                failingSyncs: data.failing_syncs ?? 0,
-                latestRun: mapDetail(data.latest_run),
-                nextScheduled: mapDetail(data.next_scheduled),
-                lastFailure: mapDetail(data.last_failure, true),
-                breakdown,
-        };
-};
-
-const mergeSummary = (localSummary, serverSummary) => {
-        if (!serverSummary) {
-                return localSummary;
-        }
-
-        const mergedBreakdown = {};
-        SUMMARY_TYPE_ORDER.forEach((type) => {
-                mergedBreakdown[type] = {
-                        label:
-                                serverSummary.breakdown?.[type]?.label ||
-                                localSummary.breakdown?.[type]?.label ||
-                                SUMMARY_TYPE_METADATA[type].label,
-                        total:
-                                serverSummary.breakdown?.[type]?.total ??
-                                localSummary.breakdown?.[type]?.total ??
-                                0,
-                        running:
-                                serverSummary.breakdown?.[type]?.running ??
-                                localSummary.breakdown?.[type]?.running ??
-                                0,
-                        failing:
-                                serverSummary.breakdown?.[type]?.failing ??
-                                localSummary.breakdown?.[type]?.failing ??
-                                0,
-                };
-        });
-
-        return {
-                totalSyncs: serverSummary.totalSyncs ?? localSummary.totalSyncs,
-                runningSyncs: serverSummary.runningSyncs ?? localSummary.runningSyncs,
-                failingSyncs: serverSummary.failingSyncs ?? localSummary.failingSyncs,
-                latestRun: serverSummary.latestRun ?? localSummary.latestRun,
-                nextScheduled: serverSummary.nextScheduled ?? localSummary.nextScheduled,
-                lastFailure: serverSummary.lastFailure ?? localSummary.lastFailure,
-                breakdown: mergedBreakdown,
-        };
-};
-
-const formatSummaryTimestamp = (value) => {
-        if (!value) {
-                return null;
-        }
-        const date = parseTimestamp(value);
-        if (!date) {
-                return null;
-        }
-        return (
-                new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                        timeZone: "UTC",
-                }).format(date) + " UTC"
-        );
-};
-
-function ChatBotSyncs({ initialData = null }) {
+function ChatBotSyncs() {
         const { chatBotId } = useParams();
         const { notify } = useNotifications();
         const { user } = useAuth();
 
-        const initialJira = initialData?.jiraSyncs ?? [];
-        const initialConfluence = initialData?.confluenceSyncs ?? [];
-        const initialGit = initialData?.gitSyncs ?? [];
-
-        const [jiraSyncs, setJiraSyncs] = useState(initialJira);
-        const [confluenceSyncs, setConfluenceSyncs] = useState(initialConfluence);
+        const [jiraSyncs, setJiraSyncs] = useState([]);
+        const [confluenceSyncs, setConfluenceSyncs] = useState([]);
         const [credentials, setCredentials] = useState([]);
-        const [gitSyncs, setGitSyncs] = useState(initialGit);
+        const [gitSyncs, setGitSyncs] = useState([]);
         const [gitCredentials, setGitCredentials] = useState([]);
 
         const [jiraFormMessage, setJiraFormMessage] = useState(null);
@@ -346,16 +59,8 @@ function ChatBotSyncs({ initialData = null }) {
 	});
 
         const [jobDetails, setJobDetails] = useState({});
-        const initialSummary = initialData?.summary
-                ? mergeSummary(
-                          computeSummaryFromSyncs(initialJira, initialConfluence, initialGit),
-                          initialData.summary,
-                  )
-                : computeSummaryFromSyncs(initialJira, initialConfluence, initialGit);
-        const [syncSummary, setSyncSummary] = useState(initialSummary);
         const pollTimeouts = useRef({});
         const activePolls = useRef({});
-        const serverSummaryRef = useRef(initialData?.summary ?? null);
         const canManage = user?.is_staff || user?.role === "admin";
 
 	const makeJobKey = (type, id) => `${type}-${id}`;
@@ -384,62 +89,26 @@ function ChatBotSyncs({ initialData = null }) {
 		);
 	}, []);
 
-        const loadData = useCallback(async () => {
-                try {
-                        const [jiraRes, confRes, credRes, gitRes, gitCredRes] = await Promise.all(
-                                [
-                                        api.get(`/chatBots/${chatBotId}/jiraSyncs/`),
-                                        api.get(`/chatBots/${chatBotId}/confluenceSyncs/`),
-                                        api.get("/credentials/"),
-                                        api.get(`/chatBots/${chatBotId}/gitRepoSyncs/`),
-                                        api.get("/gitCredentials/"),
-                                ]
-                        );
-
-                        const jiraData = jiraRes.data || [];
-                        const confluenceData = confRes.data || [];
-                        const gitData = gitRes.data || [];
-
-                        setJiraSyncs(jiraData);
-                        setConfluenceSyncs(confluenceData);
-                        setCredentials(credRes.data || []);
-                        setGitSyncs(gitData);
-                        setGitCredentials(gitCredRes.data || []);
-
-                        const localSummary = computeSummaryFromSyncs(
-                                jiraData,
-                                confluenceData,
-                                gitData,
-                        );
-                        let mergedSummary = localSummary;
-
-                        try {
-                                const { data } = await api.get(
-                                        `/chatBots/${chatBotId}/sync-summary/`,
-                                );
-                                const adapted = adaptSummaryResponse(data);
-                                if (adapted) {
-                                        serverSummaryRef.current = adapted;
-                                        mergedSummary = mergeSummary(localSummary, adapted);
-                                } else {
-                                        serverSummaryRef.current = null;
-                                }
-                        } catch (summaryError) {
-                                if (summaryError?.response?.status !== 404) {
-                                        console.warn("Unable to load sync summary", summaryError);
-                                }
-                                serverSummaryRef.current = null;
-                                mergedSummary = localSummary;
-                        }
-
-                        setSyncSummary(mergedSummary);
-                } catch (err) {
-                        console.error("Error loading syncs", err);
-                        const fallbackSummary = computeSummaryFromSyncs();
-                        serverSummaryRef.current = null;
-                        setSyncSummary(fallbackSummary);
-                }
-        }, [chatBotId]);
+	const loadData = useCallback(async () => {
+		try {
+			const [jiraRes, confRes, credRes, gitRes, gitCredRes] = await Promise.all(
+				[
+					api.get(`/chatBots/${chatBotId}/jiraSyncs/`),
+					api.get(`/chatBots/${chatBotId}/confluenceSyncs/`),
+					api.get("/credentials/"),
+					api.get(`/chatBots/${chatBotId}/gitRepoSyncs/`),
+					api.get("/gitCredentials/"),
+				]
+			);
+			setJiraSyncs(jiraRes.data);
+			setConfluenceSyncs(confRes.data);
+			setCredentials(credRes.data);
+			setGitSyncs(gitRes.data);
+			setGitCredentials(gitCredRes.data);
+		} catch (err) {
+			console.error("Error loading syncs", err);
+		}
+	}, [chatBotId]);
 
 	const stopPolling = useCallback((key) => {
 		if (pollTimeouts.current[key]) {
@@ -544,25 +213,15 @@ function ChatBotSyncs({ initialData = null }) {
                 [chatBotId, loadData, notify, stopPolling, updateSync]
         );
 
-        useEffect(() => {
-                loadData();
-        }, [loadData]);
+	useEffect(() => {
+		loadData();
+	}, [loadData]);
 
-        useEffect(() => {
-                const localSummary = computeSummaryFromSyncs(
-                        jiraSyncs,
-                        confluenceSyncs,
-                        gitSyncs,
-                );
-                const merged = mergeSummary(localSummary, serverSummaryRef.current);
-                setSyncSummary(merged);
-        }, [jiraSyncs, confluenceSyncs, gitSyncs]);
-
-        useEffect(
-                () => () => {
-                        Object.values(pollTimeouts.current).forEach((timeoutId) => {
-                                clearTimeout(timeoutId);
-                        });
+	useEffect(
+		() => () => {
+			Object.values(pollTimeouts.current).forEach((timeoutId) => {
+				clearTimeout(timeoutId);
+			});
 			pollTimeouts.current = {};
 			activePolls.current = {};
 		},
@@ -853,13 +512,9 @@ function ChatBotSyncs({ initialData = null }) {
 		await triggerSyncNow("confluence", id);
 	};
 
-        const syncGitNow = async (id) => {
-                await triggerSyncNow("git", id);
-        };
-
-        const typeLabel = (type) => SUMMARY_TYPE_METADATA[type]?.label || "Sync";
-        const currentSummary = syncSummary || computeSummaryFromSyncs(jiraSyncs, confluenceSyncs, gitSyncs);
-        const hasConfiguredSyncs = currentSummary.totalSyncs > 0;
+	const syncGitNow = async (id) => {
+		await triggerSyncNow("git", id);
+	};
 
         return (
                 <div style={{ padding: "2rem" }}>
@@ -870,122 +525,6 @@ function ChatBotSyncs({ initialData = null }) {
                                         sync settings.
                                 </p>
                         )}
-
-                        <section
-                                aria-label="Sync summary"
-                                style={{
-                                        margin: "1.5rem 0",
-                                        padding: "1.5rem",
-                                        borderRadius: "0.75rem",
-                                        border: "1px solid #d1d5db",
-                                        background: "#f9fafb",
-                                }}
-                        >
-                                <h2 style={{ marginTop: 0 }}>Sync Summary</h2>
-                                <div style={{ display: "grid", gap: "0.5rem", marginTop: "0.75rem" }}>
-                                        <p style={{ margin: 0 }}>
-                                                <strong>Total syncs:</strong> {currentSummary.totalSyncs}
-                                        </p>
-                                        <p style={{ margin: 0 }}>
-                                                <strong>Failing syncs:</strong> {currentSummary.failingSyncs}
-                                        </p>
-                                        <p style={{ margin: 0 }}>
-                                                <strong>Running or queued:</strong> {currentSummary.runningSyncs}
-                                        </p>
-                                        <p style={{ margin: 0 }}>
-                                                <strong>Last completed run:</strong>{" "}
-                                                {currentSummary.latestRun
-                                                        ? `${typeLabel(currentSummary.latestRun.type)} (${currentSummary.latestRun.label}) — ${
-                                                                  formatSummaryTimestamp(currentSummary.latestRun.timestamp) ||
-                                                                  "Unknown time"
-                                                          }`
-                                                        : "No successful runs yet"}
-                                        </p>
-                                        <p style={{ margin: 0 }}>
-                                                <strong>Next scheduled run:</strong>{" "}
-                                                {currentSummary.nextScheduled
-                                                        ? `${typeLabel(currentSummary.nextScheduled.type)} (${currentSummary.nextScheduled.label}) — ${
-                                                                  formatSummaryTimestamp(
-                                                                          currentSummary.nextScheduled.timestamp,
-                                                                  ) || "Unknown time"
-                                                          }`
-                                                        : "Not scheduled"}
-                                        </p>
-                                </div>
-
-                                {currentSummary.lastFailure && (
-                                        <div
-                                                style={{
-                                                        marginTop: "1rem",
-                                                        padding: "0.75rem",
-                                                        borderRadius: "0.5rem",
-                                                        background: "#fef2f2",
-                                                        border: "1px solid #fca5a5",
-                                                        color: "#7f1d1d",
-                                                }}
-                                        >
-                                                <strong>Last failure:</strong>{" "}
-                                                {typeLabel(currentSummary.lastFailure.type)} ({
-                                                        currentSummary.lastFailure.label
-                                                }) — {currentSummary.lastFailure.message || "Sync failed."}
-                                                {currentSummary.lastFailure.timestamp && (
-                                                        <span>
-                                                                {" "}(
-                                                                {formatSummaryTimestamp(
-                                                                        currentSummary.lastFailure.timestamp,
-                                                                )}
-                                                                )
-                                                        </span>
-                                                )}
-                                        </div>
-                                )}
-
-                                <div style={{ marginTop: "1rem" }}>
-                                        <h3 style={{ margin: "0 0 0.5rem" }}>Breakdown</h3>
-                                        <ul style={{ margin: 0, paddingLeft: "1.25rem" }}>
-                                                {SUMMARY_TYPE_ORDER.map((type) => {
-                                                        const counts = currentSummary.breakdown[type];
-                                                        return (
-                                                                <li key={type} style={{ marginBottom: "0.25rem" }}>
-                                                                        <strong>{counts.label}:</strong> {counts.total} total, {counts.failing} failing, {counts.running} running
-                                                                </li>
-                                                        );
-                                                })}
-                                        </ul>
-                                </div>
-
-                                {!hasConfiguredSyncs && (
-                                        <div
-                                                style={{
-                                                        marginTop: "1rem",
-                                                        padding: "0.75rem",
-                                                        borderRadius: "0.5rem",
-                                                        background: "#eef2ff",
-                                                        border: "1px solid #c7d2fe",
-                                                        color: "#312e81",
-                                                }}
-                                        >
-                                                <p style={{ margin: 0 }}>
-                                                        No syncs configured yet. Start by connecting the sources your chat
-                                                        bot relies on.
-                                                </p>
-                                                <p style={{ margin: "0.5rem 0 0" }}>
-                                                        {canManage ? (
-                                                                <>
-                                                                        Set up <Link to="/credentials">credentials</Link> to
-                                                                        start connecting your data sources.
-                                                                </>
-                                                        ) : (
-                                                                <>
-                                                                        Review <Link to="/credentials">credential setup</Link>{" "}
-                                                                        or contact an administrator for assistance.
-                                                                </>
-                                                        )}
-                                                </p>
-                                        </div>
-                                )}
-                        </section>
-
                         <h2>Jira Syncs</h2>
                         {canManage && (
                                 <form onSubmit={submitJira}>
@@ -1046,140 +585,105 @@ function ChatBotSyncs({ initialData = null }) {
                                 </form>
                         )}
 
-                        {jiraSyncs.length === 0 ? (
-                                <div
-                                        style={{
-                                                marginTop: "1rem",
-                                                padding: "1rem",
-                                                border: "1px dashed #d1d5db",
-                                                borderRadius: "0.5rem",
-                                        }}
-                                >
-                                        <p style={{ margin: 0 }}>No Jira syncs have been configured yet.</p>
-                                        <p style={{ margin: "0.5rem 0 0" }}>
-                                                {canManage ? (
+			<ul>
+				{jiraSyncs.map((sync) => (
+					<li key={sync.id}>
+                                                {canManage && editingJira === sync.id ? (
+							<form onSubmit={editJira}>
+								<input
+									value={editingJiraData.board_url}
+									onChange={(e) =>
+										setEditingJiraData({
+											...editingJiraData,
+											board_url: e.target.value,
+										})
+									}
+								/>
+								<select
+									value={editingJiraData.credential_id}
+									onChange={(e) =>
+										setEditingJiraData({
+											...editingJiraData,
+											credential_id: parseInt(e.target.value, 10),
+										})
+									}
+								>
+									<option value="">Select Credential</option>
+									{credentials.map((cred) => (
+										<option key={cred.id} value={cred.id}>
+											{cred.name}
+										</option>
+									))}
+								</select>
+								<select
+									value={editingJiraData.sync_interval}
+									onChange={(e) =>
+										setEditingJiraData({
+											...editingJiraData,
+											sync_interval: e.target.value,
+										})
+									}
+								>
+									<option value="manual">Manual</option>
+									<option value="daily">Daily</option>
+									<option value="weekly">Weekly</option>
+									<option value="monthly">Monthly</option>
+								</select>
+								<button type="submit">Save</button>
+								<button type="button" onClick={() => setEditingJira(null)}>
+									Cancel
+								</button>
+							</form>
+						) : (
+							<>
+								{sync.board_url} (Credential: {sync.credential?.name})
+                                                                {canManage && (
+                                                                        <button
+                                                                                onClick={() => {
+                                                                                        setEditingJira(sync.id);
+                                                                                        setEditingJiraData({
+                                                                                                board_url:
+                                                                                                        sync.board_url,
+                                                                                                credential_id:
+                                                                                                        sync.credential?.id,
+                                                                                                sync_interval:
+                                                                                                        sync.sync_interval,
+                                                                                        });
+                                                                                }}
+                                                                        >
+                                                                                Edit
+                                                                        </button>
+                                                                )}
+							</>
+						)}
+						<div>
+							<strong>Status:</strong> {sync.sync_status || "idle"}
+							{jobDetails[makeJobKey("jira", sync.id)]?.isPolling && (
+								<span style={{ marginLeft: "0.5rem" }}>Checking status...</span>
+							)}
+						</div>
+						{sync.sync_status_message && <div>{sync.sync_status_message}</div>}
+						{jobDetails[makeJobKey("jira", sync.id)]?.jobMessage && (
+							<div>
+								<em>
+									Job message:{" "}
+									{jobDetails[makeJobKey("jira", sync.id)]?.jobMessage}
+								</em>
+							</div>
+						)}
+                                                {canManage && (
                                                         <>
-                                                                Visit <Link to="/credentials">Credentials</Link> to add an
-                                                                integration key, then create your first Jira sync.
-                                                        </>
-                                                ) : (
-                                                        <>
-                                                                Ask an administrator to configure Jira syncs or review{" "}
-                                                                <Link to="/credentials">credential setup</Link> for more
-                                                                details.
+                                                                <button onClick={() => deleteJira(sync.id)}>
+                                                                        Delete
+                                                                </button>
+                                                                <button onClick={() => syncJiraNow(sync.id)}>
+                                                                        Sync Now
+                                                                </button>
                                                         </>
                                                 )}
-                                        </p>
-                                </div>
-                        ) : (
-                                <ul>
-                                        {jiraSyncs.map((sync) => (
-                                                <li key={sync.id}>
-                                                        {canManage && editingJira === sync.id ? (
-                                                                <form onSubmit={editJira}>
-                                                                        <input
-                                                                                value={editingJiraData.board_url}
-                                                                                onChange={(e) =>
-                                                                                        setEditingJiraData({
-                                                                                                ...editingJiraData,
-                                                                                                board_url: e.target.value,
-                                                                                        })
-                                                                                }
-                                                                        />
-                                                                        <select
-                                                                                value={editingJiraData.credential_id}
-                                                                                onChange={(e) =>
-                                                                                        setEditingJiraData({
-                                                                                                ...editingJiraData,
-                                                                                                credential_id: parseInt(
-                                                                                                        e.target.value,
-                                                                                                        10,
-                                                                                                ),
-                                                                                        })
-                                                                                }
-                                                                        >
-                                                                                <option value="">Select Credential</option>
-                                                                                {credentials.map((cred) => (
-                                                                                        <option key={cred.id} value={cred.id}>
-                                                                                                {cred.name}
-                                                                                        </option>
-                                                                                ))}
-                                                                        </select>
-                                                                        <select
-                                                                                value={editingJiraData.sync_interval}
-                                                                                onChange={(e) =>
-                                                                                        setEditingJiraData({
-                                                                                                ...editingJiraData,
-                                                                                                sync_interval: e.target.value,
-                                                                                        })
-                                                                                }
-                                                                        >
-                                                                                <option value="manual">Manual</option>
-                                                                                <option value="daily">Daily</option>
-                                                                                <option value="weekly">Weekly</option>
-                                                                                <option value="monthly">Monthly</option>
-                                                                        </select>
-                                                                        <button type="submit">Save</button>
-                                                                        <button
-                                                                                type="button"
-                                                                                onClick={() => setEditingJira(null)}
-                                                                        >
-                                                                                Cancel
-                                                                        </button>
-                                                                </form>
-                                                        ) : (
-                                                                <>
-                                                                        {sync.board_url} (Credential: {sync.credential?.name})
-                                                                        {canManage && (
-                                                                                <button
-                                                                                        onClick={() => {
-                                                                                                setEditingJira(sync.id);
-                                                                                                setEditingJiraData({
-                                                                                                        board_url:
-                                                                                                                sync.board_url,
-                                                                                                        credential_id:
-                                                                                                                sync.credential?.id,
-                                                                                                        sync_interval:
-                                                                                                                sync.sync_interval,
-                                                                                                });
-                                                                                        }}
-                                                                                >
-                                                                                        Edit
-                                                                                </button>
-                                                                        )}
-                                                                </>
-                                                        )}
-                                                        <div>
-                                                                <strong>Status:</strong> {sync.sync_status || "idle"}
-                                                                {jobDetails[makeJobKey("jira", sync.id)]?.isPolling && (
-                                                                        <span style={{ marginLeft: "0.5rem" }}>
-                                                                                Checking status...
-                                                                        </span>
-                                                                )}
-                                                        </div>
-                                                        {sync.sync_status_message && <div>{sync.sync_status_message}</div>}
-                                                        {jobDetails[makeJobKey("jira", sync.id)]?.jobMessage && (
-                                                                <div>
-                                                                        <em>
-                                                                                Job message:{" "}
-                                                                                {jobDetails[makeJobKey("jira", sync.id)]?.jobMessage}
-                                                                        </em>
-                                                                </div>
-                                                        )}
-                                                        {canManage && (
-                                                                <>
-                                                                        <button onClick={() => deleteJira(sync.id)}>
-                                                                                Delete
-                                                                        </button>
-                                                                        <button onClick={() => syncJiraNow(sync.id)}>
-                                                                                Sync Now
-                                                                        </button>
-                                                                </>
-                                                        )}
-                                                </li>
-                                        ))}
-                                </ul>
-                        )}
+					</li>
+				))}
+			</ul>
 
 			<h2>Confluence Syncs</h2>
                         {canManage && (
@@ -1247,141 +751,107 @@ function ChatBotSyncs({ initialData = null }) {
                                 </form>
                         )}
 
-                        {confluenceSyncs.length === 0 ? (
-                                <div
-                                        style={{
-                                                marginTop: "1rem",
-                                                padding: "1rem",
-                                                border: "1px dashed #d1d5db",
-                                                borderRadius: "0.5rem",
-                                        }}
-                                >
-                                        <p style={{ margin: 0 }}>No Confluence syncs have been configured yet.</p>
-                                        <p style={{ margin: "0.5rem 0 0" }}>
-                                                {canManage ? (
+			<ul>
+				{confluenceSyncs.map((sync) => (
+					<li key={sync.id}>
+                                                {canManage && editingConfluence === sync.id ? (
+							<form onSubmit={editConfluence}>
+								<input
+									value={editingConfluenceData.space_url}
+									onChange={(e) =>
+										setEditingConfluenceData({
+											...editingConfluenceData,
+											space_url: e.target.value,
+										})
+									}
+								/>
+								<select
+									value={editingConfluenceData.credential_id}
+									onChange={(e) =>
+										setEditingConfluenceData({
+											...editingConfluenceData,
+											credential_id: parseInt(e.target.value, 10),
+										})
+									}
+								>
+									<option value="">Select Credential</option>
+									{credentials.map((cred) => (
+										<option key={cred.id} value={cred.id}>
+											{cred.name}
+										</option>
+									))}
+								</select>
+								<select
+									value={editingConfluenceData.sync_interval}
+									onChange={(e) =>
+										setEditingConfluenceData({
+											...editingConfluenceData,
+											sync_interval: e.target.value,
+										})
+									}
+								>
+									<option value="manual">Manual</option>
+									<option value="daily">Daily</option>
+									<option value="weekly">Weekly</option>
+									<option value="monthly">Monthly</option>
+								</select>
+								<button type="submit">Save</button>
+								<button
+									type="button"
+									onClick={() => setEditingConfluence(null)}
+								>
+									Cancel
+								</button>
+							</form>
+						) : (
+							<>
+								{sync.space_url} (Credential: {sync.credential?.name})
+                                                                {canManage && (
+                                                                        <button
+                                                                                onClick={() => {
+                                                                                        setEditingConfluence(sync.id);
+                                                                                        setEditingConfluenceData({
+                                                                                                space_url: sync.space_url,
+                                                                                                credential_id:
+                                                                                                        sync.credential?.id,
+                                                                                                sync_interval:
+                                                                                                        sync.sync_interval,
+                                                                                        });
+                                                                                }}
+                                                                        >
+                                                                                Edit
+                                                                        </button>
+                                                                )}
+							</>
+						)}
+						<div>
+							<strong>Status:</strong> {sync.sync_status || "idle"}
+							{jobDetails[makeJobKey("confluence", sync.id)]?.isPolling && (
+								<span style={{ marginLeft: "0.5rem" }}>Checking status...</span>
+							)}
+						</div>
+						{sync.sync_status_message && <div>{sync.sync_status_message}</div>}
+						{jobDetails[makeJobKey("confluence", sync.id)]?.jobMessage && (
+							<div>
+								<em>
+									Job message:{" "}
+									{jobDetails[makeJobKey("confluence", sync.id)]?.jobMessage}
+								</em>
+							</div>
+						)}
+                                                {canManage && (
                                                         <>
-                                                                Connect your wiki by configuring <Link to="/credentials">credentials</Link>{" "}
-                                                                and adding a Confluence sync.
-                                                        </>
-                                                ) : (
-                                                        <>
-                                                                Contact an administrator or review{" "}
-                                                                <Link to="/credentials">credential setup</Link> for how to
-                                                                enable Confluence syncs.
+                                                                <button onClick={() => deleteConfluence(sync.id)}>
+                                                                        Delete
+                                                                </button>
+                                                                <button onClick={() => syncConfluenceNow(sync.id)}>
+                                                                        Sync Now
+                                                                </button>
                                                         </>
                                                 )}
-                                        </p>
-                                </div>
-                        ) : (
-                                <ul>
-                                        {confluenceSyncs.map((sync) => (
-                                                <li key={sync.id}>
-                                                        {canManage && editingConfluence === sync.id ? (
-                                                                <form onSubmit={editConfluence}>
-                                                                        <input
-                                                                                value={editingConfluenceData.space_url}
-                                                                                onChange={(e) =>
-                                                                                        setEditingConfluenceData({
-                                                                                                ...editingConfluenceData,
-                                                                                                space_url: e.target.value,
-                                                                                        })
-                                                                                }
-                                                                        />
-                                                                        <select
-                                                                                value={editingConfluenceData.credential_id}
-                                                                                onChange={(e) =>
-                                                                                        setEditingConfluenceData({
-                                                                                                ...editingConfluenceData,
-                                                                                                credential_id: parseInt(
-                                                                                                        e.target.value,
-                                                                                                        10,
-                                                                                                ),
-                                                                                        })
-                                                                                }
-                                                                        >
-                                                                                <option value="">Select Credential</option>
-                                                                                {credentials.map((cred) => (
-                                                                                        <option key={cred.id} value={cred.id}>
-                                                                                                {cred.name}
-                                                                                        </option>
-                                                                                ))}
-                                                                        </select>
-                                                                        <select
-                                                                                value={editingConfluenceData.sync_interval}
-                                                                                onChange={(e) =>
-                                                                                        setEditingConfluenceData({
-                                                                                                ...editingConfluenceData,
-                                                                                                sync_interval:
-                                                                                                        e.target.value,
-                                                                                        })
-                                                                                }
-                                                                        >
-                                                                                <option value="manual">Manual</option>
-                                                                                <option value="daily">Daily</option>
-                                                                                <option value="weekly">Weekly</option>
-                                                                                <option value="monthly">Monthly</option>
-                                                                        </select>
-                                                                        <button type="submit">Save</button>
-                                                                        <button
-                                                                                type="button"
-                                                                                onClick={() => setEditingConfluence(null)}
-                                                                        >
-                                                                                Cancel
-                                                                        </button>
-                                                                </form>
-                                                        ) : (
-                                                                <>
-                                                                        {sync.space_url} (Credential: {sync.credential?.name})
-                                                                        {canManage && (
-                                                                                <button
-                                                                                        onClick={() => {
-                                                                                                setEditingConfluence(sync.id);
-                                                                                                setEditingConfluenceData({
-                                                                                                        space_url:
-                                                                                                                sync.space_url,
-                                                                                                        credential_id:
-                                                                                                                sync.credential?.id,
-                                                                                                        sync_interval:
-                                                                                                                sync.sync_interval,
-                                                                                                });
-                                                                                        }}
-                                                                                >
-                                                                                        Edit
-                                                                                </button>
-                                                                        )}
-                                                                </>
-                                                        )}
-                                                        <div>
-                                                                <strong>Status:</strong> {sync.sync_status || "idle"}
-                                                                {jobDetails[makeJobKey("confluence", sync.id)]?.isPolling && (
-                                                                        <span style={{ marginLeft: "0.5rem" }}>
-                                                                                Checking status...
-                                                                        </span>
-                                                                )}
-                                                        </div>
-                                                        {sync.sync_status_message && <div>{sync.sync_status_message}</div>}
-                                                        {jobDetails[makeJobKey("confluence", sync.id)]?.jobMessage && (
-                                                                <div>
-                                                                        <em>
-                                                                                Job message:{" "}
-                                                                                {jobDetails[makeJobKey("confluence", sync.id)]?.jobMessage}
-                                                                        </em>
-                                                                </div>
-                                                        )}
-                                                        {canManage && (
-                                                                <>
-                                                                        <button onClick={() => deleteConfluence(sync.id)}>
-                                                                                Delete
-                                                                        </button>
-                                                                        <button onClick={() => syncConfluenceNow(sync.id)}>
-                                                                                Sync Now
-                                                                        </button>
-                                                                </>
-                                                        )}
-                                                </li>
-                                        ))}
-                                </ul>
-                        )}
+					</li>
+				))}
+			</ul>
 
 			<h2>Git Repository Syncs</h2>
                         {canManage && (
@@ -1447,33 +917,8 @@ function ChatBotSyncs({ initialData = null }) {
                                         <button type="submit">Add Git Sync</button>
                                 </form>
                         )}
-                        {gitSyncs.length === 0 ? (
-                                <div
-                                        style={{
-                                                marginTop: "1rem",
-                                                padding: "1rem",
-                                                border: "1px dashed #d1d5db",
-                                                borderRadius: "0.5rem",
-                                        }}
-                                >
-                                        <p style={{ margin: 0 }}>No Git repository syncs have been configured yet.</p>
-                                        <p style={{ margin: "0.5rem 0 0" }}>
-                                                {canManage ? (
-                                                        <>
-                                                                Create a Git credential on the <Link to="/credentials">Credentials</Link>{" "}
-                                                                page to start syncing repositories.
-                                                        </>
-                                                ) : (
-                                                        <>
-                                                                Ask an administrator to link repository credentials or review{" "}
-                                                                <Link to="/credentials">credential setup</Link> to learn more.
-                                                        </>
-                                                )}
-                                        </p>
-                                </div>
-                        ) : (
-                                <ul>
-                                        {gitSyncs.map((sync) => (
+			<ul>
+				{gitSyncs.map((sync) => (
 					<li key={sync.id}>
                                                 {canManage && editingGit === sync.id ? (
 							<form onSubmit={editGit}>
@@ -1582,11 +1027,10 @@ function ChatBotSyncs({ initialData = null }) {
                                                         </>
                                                 )}
 					</li>
-                                ))}
-                                </ul>
-                        )}
-                </div>
-        );
+				))}
+			</ul>
+		</div>
+	);
 }
 
 export default ChatBotSyncs;

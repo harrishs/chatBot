@@ -11,7 +11,6 @@ from .views import (
     CredentialViewSet,
     GitCredentialViewSet,
     GitRepoSyncViewSet,
-    ChatBotSyncSummaryView,
     JiraSyncViewSet,
     LoginView,
     LogoutView,
@@ -47,7 +46,6 @@ urlpatterns = [
     path('', include(jira_router.urls)),
     path('', include(confluence_router.urls)),
     path('', include(github_router.urls)),
-    path('chatBots/<int:chatbot_id>/sync-summary/', ChatBotSyncSummaryView.as_view(), name='chatbot-sync-summary'),
     path('chatbots/<int:chatbot_id>/query/', query_documents),
     path('chatbots/<int:chatbot_id>/chat/', chat_with_bot),
 ]
