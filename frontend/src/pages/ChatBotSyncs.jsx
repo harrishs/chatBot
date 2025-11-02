@@ -1,18 +1,101 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext.jsx";
 import { handleGitSubmit } from "./gitSubmitHelper";
 import { handleJiraSubmit, handleConfluenceSubmit } from "./syncSubmitHelpers";
 
-function ChatBotSyncs() {
+const STATUS_LABELS = {
+        idle: "Idle",
+        queued: "Queued",
+        running: "Running",
+        succeeded: "Succeeded",
+        failed: "Failed",
+};
+
+const SYNC_TYPE_CONFIG = {
+        jira: {
+                label: "Jira",
+                emptyLabel: "Jira",
+                getName: (sync) => sync.board_url || `Jira sync #${sync.id}`,
+        },
+        confluence: {
+                label: "Confluence",
+                emptyLabel: "Confluence",
+                getName: (sync) => sync.space_url || `Confluence sync #${sync.id}`,
+        },
+        git: {
+                label: "Git Repository",
+                emptyLabel: "Git repository",
+                getName: (sync) => {
+                        const repo = sync.repo_full_name || `Repo sync #${sync.id}`;
+                        return sync.branch ? `${repo}@${sync.branch}` : repo;
+                },
+        },
+};
+
+const SYNC_TYPE_KEYS = ["jira", "confluence", "git"];
+
+const parseDateValue = (value) => {
+        if (!value) {
+                return null;
+        }
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+                return value;
+        }
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatDateUtc = (date) => {
+        if (!date) {
+                return "";
+        }
+        const parsed = parseDateValue(date);
+        if (!parsed) {
+                return "";
+        }
+        const pad = (num) => String(num).padStart(2, "0");
+        const year = parsed.getUTCFullYear();
+        const month = pad(parsed.getUTCMonth() + 1);
+        const day = pad(parsed.getUTCDate());
+        const hours = pad(parsed.getUTCHours());
+        const minutes = pad(parsed.getUTCMinutes());
+        return `${year}-${month}-${day} ${hours}:${minutes} UTC`;
+};
+
+const summaryPanelStyle = {
+        border: "1px solid #ddd",
+        borderRadius: "8px",
+        padding: "1rem",
+        marginTop: "1.5rem",
+        marginBottom: "2rem",
+        backgroundColor: "#fafafa",
+};
+
+const summaryListStyle = {
+        margin: "0.5rem 0",
+        paddingLeft: "1.25rem",
+};
+
+const emptyStateStyle = {
+        margin: "0.75rem 0",
+        color: "#555",
+};
+
+function ChatBotSyncs({ initialSyncData = null }) {
         const { chatBotId } = useParams();
 
-        const [jiraSyncs, setJiraSyncs] = useState([]);
-        const [confluenceSyncs, setConfluenceSyncs] = useState([]);
-	const [credentials, setCredentials] = useState([]);
-	const [gitSyncs, setGitSyncs] = useState([]);
-	const [gitCredentials, setGitCredentials] = useState([]);
+        const [jiraSyncs, setJiraSyncs] = useState(() => initialSyncData?.jiraSyncs ?? []);
+        const [confluenceSyncs, setConfluenceSyncs] = useState(
+                () => initialSyncData?.confluenceSyncs ?? []
+        );
+        const [credentials, setCredentials] = useState(() => initialSyncData?.credentials ?? []);
+        const [gitSyncs, setGitSyncs] = useState(() => initialSyncData?.gitSyncs ?? []);
+        const [gitCredentials, setGitCredentials] = useState(
+                () => initialSyncData?.gitCredentials ?? []
+        );
+        const [syncSummary, setSyncSummary] = useState(() => initialSyncData?.summary ?? null);
 
 	const [newJira, setNewJira] = useState({
 		board_url: "",
@@ -57,7 +140,19 @@ function ChatBotSyncs() {
         const { user } = useAuth();
         const canManage = user?.is_staff || user?.role === "admin";
 
-	const makeJobKey = (type, id) => `${type}-${id}`;
+        useEffect(() => {
+                if (!initialSyncData) {
+                        return;
+                }
+                setJiraSyncs(initialSyncData.jiraSyncs ?? []);
+                setConfluenceSyncs(initialSyncData.confluenceSyncs ?? []);
+                setGitSyncs(initialSyncData.gitSyncs ?? []);
+                setCredentials(initialSyncData.credentials ?? []);
+                setGitCredentials(initialSyncData.gitCredentials ?? []);
+                setSyncSummary(initialSyncData.summary ?? null);
+        }, [initialSyncData]);
+
+        const makeJobKey = (type, id) => `${type}-${id}`;
 
 	const updateSync = useCallback((type, id, updates) => {
 		const setters = {
@@ -83,26 +178,36 @@ function ChatBotSyncs() {
 		);
 	}, []);
 
-	const loadData = useCallback(async () => {
-		try {
-			const [jiraRes, confRes, credRes, gitRes, gitCredRes] = await Promise.all(
-				[
-					api.get(`/chatBots/${chatBotId}/jiraSyncs/`),
-					api.get(`/chatBots/${chatBotId}/confluenceSyncs/`),
-					api.get("/credentials/"),
-					api.get(`/chatBots/${chatBotId}/gitRepoSyncs/`),
-					api.get("/gitCredentials/"),
-				]
-			);
-			setJiraSyncs(jiraRes.data);
-			setConfluenceSyncs(confRes.data);
-			setCredentials(credRes.data);
-			setGitSyncs(gitRes.data);
-			setGitCredentials(gitCredRes.data);
-		} catch (err) {
-			console.error("Error loading syncs", err);
-		}
-	}, [chatBotId]);
+        const loadData = useCallback(async () => {
+                try {
+                        const [jiraRes, confRes, credRes, gitRes, gitCredRes] = await Promise.all(
+                                [
+                                        api.get(`/chatBots/${chatBotId}/jiraSyncs/`),
+                                        api.get(`/chatBots/${chatBotId}/confluenceSyncs/`),
+                                        api.get("/credentials/"),
+                                        api.get(`/chatBots/${chatBotId}/gitRepoSyncs/`),
+                                        api.get("/gitCredentials/"),
+                                ]
+                        );
+                        setJiraSyncs(jiraRes.data);
+                        setConfluenceSyncs(confRes.data);
+                        setCredentials(credRes.data);
+                        setGitSyncs(gitRes.data);
+                        setGitCredentials(gitCredRes.data);
+                        setSyncSummary(null);
+                        try {
+                                const summaryRes = await api.get(
+                                        `/chatBots/${chatBotId}/sync-summary/`
+                                );
+                                setSyncSummary(summaryRes.data);
+                        } catch (summaryError) {
+                                console.warn("Error loading sync summary", summaryError);
+                                setSyncSummary(null);
+                        }
+                } catch (err) {
+                        console.error("Error loading syncs", err);
+                }
+        }, [chatBotId]);
 
 	const stopPolling = useCallback((key) => {
 		if (pollTimeouts.current[key]) {
@@ -202,8 +307,11 @@ function ChatBotSyncs() {
 	);
 
         useEffect(() => {
+                if (initialSyncData) {
+                        return;
+                }
                 loadData();
-        }, [loadData]);
+        }, [initialSyncData, loadData]);
 
         useEffect(() => {
                 if (!canManage) {
@@ -491,6 +599,212 @@ function ChatBotSyncs() {
                 await triggerSyncNow("git", id);
         };
 
+        const aggregatedSummary = useMemo(() => {
+                const summary = {
+                        total: 0,
+                        failing: 0,
+                        running: 0,
+                        latestRun: null,
+                        nextScheduled: null,
+                        types: {},
+                        failingSyncs: [],
+                        statuses: {},
+                };
+
+                const collections = {
+                        jira: jiraSyncs,
+                        confluence: confluenceSyncs,
+                        git: gitSyncs,
+                };
+
+                SYNC_TYPE_KEYS.forEach((key) => {
+                        const data = collections[key] || [];
+                        const typeMeta = SYNC_TYPE_CONFIG[key] || {
+                                label: key,
+                                emptyLabel: key,
+                                getName: (sync) => sync.id ? `Sync #${sync.id}` : key,
+                        };
+
+                        const typeInfo = {
+                                label: typeMeta.label,
+                                total: data.length,
+                                failing: 0,
+                                running: 0,
+                                latestRun: null,
+                                nextScheduled: null,
+                                statuses: {},
+                        };
+
+                        summary.total += data.length;
+
+                        data.forEach((sync) => {
+                                const status = (sync.sync_status || "idle").toLowerCase();
+                                typeInfo.statuses[status] = (typeInfo.statuses[status] || 0) + 1;
+                                summary.statuses[status] = (summary.statuses[status] || 0) + 1;
+
+                                const name = typeMeta.getName(sync);
+
+                                if (status === "failed") {
+                                        typeInfo.failing += 1;
+                                        summary.failing += 1;
+                                        summary.failingSyncs.push({
+                                                type: typeMeta.label,
+                                                name,
+                                                id: sync.id,
+                                        });
+                                }
+
+                                if (status === "running" || status === "queued") {
+                                        typeInfo.running += 1;
+                                        summary.running += 1;
+                                }
+
+                                const lastSyncTime = parseDateValue(sync.last_sync_time);
+                                if (lastSyncTime) {
+                                        if (!typeInfo.latestRun || lastSyncTime > typeInfo.latestRun.date) {
+                                                typeInfo.latestRun = {
+                                                        date: lastSyncTime,
+                                                        id: sync.id,
+                                                        name,
+                                                        status,
+                                                        type: typeMeta.label,
+                                                };
+                                        }
+                                        if (!summary.latestRun || lastSyncTime > summary.latestRun.date) {
+                                                summary.latestRun = {
+                                                        date: lastSyncTime,
+                                                        id: sync.id,
+                                                        name,
+                                                        status,
+                                                        type: typeMeta.label,
+                                                };
+                                        }
+                                }
+
+                                const nextSyncTime = parseDateValue(sync.next_sync_at);
+                                if (nextSyncTime) {
+                                        if (!typeInfo.nextScheduled || nextSyncTime < typeInfo.nextScheduled.date) {
+                                                typeInfo.nextScheduled = {
+                                                        date: nextSyncTime,
+                                                        id: sync.id,
+                                                        name,
+                                                        type: typeMeta.label,
+                                                };
+                                        }
+                                        if (!summary.nextScheduled || nextSyncTime < summary.nextScheduled.date) {
+                                                summary.nextScheduled = {
+                                                        date: nextSyncTime,
+                                                        id: sync.id,
+                                                        name,
+                                                        type: typeMeta.label,
+                                                };
+                                        }
+                                }
+                        });
+
+                        summary.types[key] = typeInfo;
+                });
+
+                return summary;
+        }, [jiraSyncs, confluenceSyncs, gitSyncs]);
+
+        const statusBreakdown = useMemo(() => {
+                if (syncSummary?.overall?.statuses) {
+                        return syncSummary.overall.statuses;
+                }
+                return aggregatedSummary.statuses;
+        }, [aggregatedSummary, syncSummary]);
+
+        const latestRunInfo = aggregatedSummary.latestRun
+                ? aggregatedSummary.latestRun
+                : syncSummary?.overall?.latest_sync?.occurred_at
+                ? {
+                          date: parseDateValue(syncSummary.overall.latest_sync.occurred_at),
+                          type:
+                                  syncSummary.overall.latest_sync.type_label ||
+                                  SYNC_TYPE_CONFIG[syncSummary.overall.latest_sync.type]?.label ||
+                                  syncSummary.overall.latest_sync.type,
+                          id: syncSummary.overall.latest_sync.sync_id,
+                          name: syncSummary.overall.latest_sync.name,
+                  }
+                : null;
+
+        const nextScheduledInfo = aggregatedSummary.nextScheduled
+                ? aggregatedSummary.nextScheduled
+                : syncSummary?.overall?.next_scheduled?.scheduled_for
+                ? {
+                          date: parseDateValue(syncSummary.overall.next_scheduled.scheduled_for),
+                          type:
+                                  syncSummary.overall.next_scheduled.type_label ||
+                                  SYNC_TYPE_CONFIG[syncSummary.overall.next_scheduled.type]?.label ||
+                                  syncSummary.overall.next_scheduled.type,
+                          id: syncSummary.overall.next_scheduled.sync_id,
+                          name: syncSummary.overall.next_scheduled.name,
+                  }
+                : null;
+
+        const typeSummariesInOrder = useMemo(
+                () =>
+                        SYNC_TYPE_KEYS.map((key) => {
+                                const typeInfo = aggregatedSummary.types[key];
+                                if (typeInfo) {
+                                        return { key, ...typeInfo };
+                                }
+                                const meta = SYNC_TYPE_CONFIG[key];
+                                return {
+                                        key,
+                                        label: meta?.label || key,
+                                        total: 0,
+                                        failing: 0,
+                                        running: 0,
+                                        latestRun: null,
+                                        nextScheduled: null,
+                                        statuses: {},
+                                };
+                        }),
+                [aggregatedSummary]
+        );
+
+        const healthyMessage = aggregatedSummary.failing === 0
+                ? aggregatedSummary.total === 0
+                        ? "No syncs configured yet. Add your first sync below."
+                        : "All configured syncs are healthy."
+                : "";
+
+        const latestRunText = latestRunInfo
+                ? `${latestRunInfo.type} • ${formatDateUtc(latestRunInfo.date)}`
+                : "No sync runs have completed yet.";
+
+        const nextScheduledText = nextScheduledInfo
+                ? `${nextScheduledInfo.type} • ${formatDateUtc(nextScheduledInfo.date)}`
+                : "No upcoming scheduled runs.";
+
+        const summaryStatusEntries = Object.entries(statusBreakdown || {}).filter(
+                ([, count]) => count > 0
+        );
+
+        const renderEmptyState = (typeKey) => {
+                const meta = SYNC_TYPE_CONFIG[typeKey] || { label: typeKey, emptyLabel: typeKey };
+                const label = meta.emptyLabel || meta.label || typeKey;
+                return (
+                        <p style={emptyStateStyle}>
+                                No {label} syncs configured yet. {" "}
+                                {canManage ? (
+                                        <>
+                                                Connect a credential on the {" "}
+                                                <Link to="/credentials">Credentials page</Link> and use
+                                                the form below to add one.
+                                        </>
+                                ) : (
+                                        <>
+                                                Ask an administrator to configure one from the {" "}
+                                                <Link to="/credentials">Credentials page</Link>.
+                                        </>
+                                )}
+                        </p>
+                );
+        };
+
         return (
                 <div style={{ padding: "2rem" }}>
                         <h2>ChatBot Syncs</h2>
@@ -500,6 +814,66 @@ function ChatBotSyncs() {
                                         manage sync configurations.
                                 </p>
                         )}
+                        <section style={summaryPanelStyle}>
+                                <h3 style={{ marginTop: 0 }}>Sync Summary</h3>
+                                <p>
+                                        <strong>Total syncs configured:</strong> {aggregatedSummary.total}
+                                </p>
+                                <p>
+                                        <strong>Currently failing:</strong> {aggregatedSummary.failing}
+                                </p>
+                                <p>
+                                        <strong>Active jobs:</strong> {aggregatedSummary.running}
+                                </p>
+                                <p>
+                                        <strong>Most recent sync:</strong> {latestRunText}
+                                </p>
+                                <p>
+                                        <strong>Next scheduled run:</strong> {nextScheduledText}
+                                </p>
+                                <div>
+                                        <strong>Per source:</strong>
+                                        <ul style={summaryListStyle}>
+                                                {typeSummariesInOrder.map((typeInfo) => (
+                                                        <li key={typeInfo.key}>
+                                                                {typeInfo.label}: {typeInfo.total} configured
+                                                                {typeInfo.failing ? ` • ${typeInfo.failing} failing` : ""}
+                                                                {typeInfo.running ? ` • ${typeInfo.running} active` : ""}
+                                                        </li>
+                                                ))}
+                                        </ul>
+                                </div>
+                                {summaryStatusEntries.length > 0 && (
+                                        <div>
+                                                <strong>Status breakdown:</strong>
+                                                <ul style={summaryListStyle}>
+                                                        {summaryStatusEntries.map(([status, count]) => (
+                                                                <li key={status}>
+                                                                        {STATUS_LABELS[status] || status}: {count}
+                                                                </li>
+                                                        ))}
+                                                </ul>
+                                        </div>
+                                )}
+                                {aggregatedSummary.failingSyncs.length > 0 ? (
+                                        <div>
+                                                <strong>Failing syncs:</strong>
+                                                <ul style={summaryListStyle}>
+                                                        {aggregatedSummary.failingSyncs.map((item) => (
+                                                                <li key={`${item.type}-${item.id}`}>
+                                                                        {item.type}: {item.name}
+                                                                </li>
+                                                        ))}
+                                                </ul>
+                                        </div>
+                                ) : (
+                                        healthyMessage && (
+                                                <p style={{ margin: "0.5rem 0", color: "#2f855a" }}>
+                                                        {healthyMessage}
+                                                </p>
+                                        )
+                                )}
+                        </section>
                         <h3>Jira Syncs</h3>
                         {canManage && (
                                 <form onSubmit={submitJira}>
@@ -541,7 +915,8 @@ function ChatBotSyncs() {
                         </form>
                         )}
 
-			<ul>
+                        {jiraSyncs.length > 0 ? (
+                                <ul>
 				{jiraSyncs.map((sync) => (
 					<li key={sync.id}>
                                                 {canManage && editingJira === sync.id ? (
@@ -638,7 +1013,10 @@ function ChatBotSyncs() {
                                                 )}
 					</li>
 				))}
-			</ul>
+                                </ul>
+                        ) : (
+                                renderEmptyState("jira")
+                        )}
 
                         <h3>Confluence Syncs</h3>
                         {canManage && (
@@ -687,8 +1065,9 @@ function ChatBotSyncs() {
                                 </form>
                         )}
 
-			<ul>
-				{confluenceSyncs.map((sync) => (
+                        {confluenceSyncs.length > 0 ? (
+                                <ul>
+                                {confluenceSyncs.map((sync) => (
 					<li key={sync.id}>
                                                 {canManage && editingConfluence === sync.id ? (
 							<form onSubmit={editConfluence}>
@@ -790,8 +1169,11 @@ function ChatBotSyncs() {
                                                         </>
                                                 )}
 					</li>
-				))}
-			</ul>
+                                ))}
+                                </ul>
+                        ) : (
+                                renderEmptyState("confluence")
+                        )}
 
                         <h3>Git Repository Syncs</h3>
                         {canManage && (
@@ -846,7 +1228,8 @@ function ChatBotSyncs() {
                                         <button type="submit">Add Git Sync</button>
                                 </form>
                         )}
-			<ul>
+                        {gitSyncs.length > 0 ? (
+                                <ul>
                                 {gitSyncs.map((sync) => (
                                         <li key={sync.id}>
                                                 {canManage && editingGit === sync.id ? (
@@ -955,8 +1338,11 @@ function ChatBotSyncs() {
                                                         </>
                                                 )}
 					</li>
-				))}
-			</ul>
+                                ))}
+                                </ul>
+                        ) : (
+                                renderEmptyState("git")
+                        )}
 		</div>
 	);
 }
