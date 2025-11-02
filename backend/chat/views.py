@@ -246,9 +246,203 @@ class ChatBotInstanceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ChatBotInstance.objects.filter(company=self.request.user.company)
-    
+
     def perform_create(self, serializer):
         serializer.save(company=self.request.user.company)
+
+    @action(detail=True, methods=['get'], url_path='sync-summary')
+    def sync_summary(self, request, pk=None):
+        chatbot = self.get_object()
+
+        def serialize_datetime(value):
+            if not value:
+                return None
+            if timezone.is_aware(value):
+                value = timezone.localtime(value)
+            return value.isoformat()
+
+        def jira_name(sync):
+            return getattr(sync, 'board_url', None) or f"Jira sync #{sync.id}"
+
+        def confluence_name(sync):
+            return getattr(sync, 'space_url', None) or f"Confluence sync #{sync.id}"
+
+        def git_name(sync):
+            repo = getattr(sync, 'repo_full_name', None) or f"Repo sync #{sync.id}"
+            branch = getattr(sync, 'branch', None)
+            return f"{repo}@{branch}" if branch else repo
+
+        type_definitions = [
+            ("jira", "Jira", chatbot.jiraSyncs.all(), jira_name),
+            ("confluence", "Confluence", chatbot.confluenceSyncs.all(), confluence_name),
+            ("git", "Git Repository", chatbot.gitRepoSyncs.all(), git_name),
+        ]
+
+        part_summaries = {}
+
+        for type_key, label, queryset, name_getter in type_definitions:
+            syncs = list(queryset)
+            statuses = {}
+            failing_ids = []
+            running_ids = []
+            latest_dt = None
+            latest_id = None
+            latest_name = None
+            next_dt = None
+            next_id = None
+            next_name = None
+
+            for sync in syncs:
+                status_value = getattr(sync, 'sync_status', None) or SyncStatusMixin.Status.IDLE
+                status = str(status_value).lower()
+                statuses[status] = statuses.get(status, 0) + 1
+
+                if status == SyncStatusMixin.Status.FAILED:
+                    failing_ids.append(sync.id)
+
+                if status in (SyncStatusMixin.Status.QUEUED, SyncStatusMixin.Status.RUNNING):
+                    running_ids.append(sync.id)
+
+                last_sync_time = getattr(sync, 'last_sync_time', None)
+                if last_sync_time and (latest_dt is None or last_sync_time > latest_dt):
+                    latest_dt = last_sync_time
+                    latest_id = sync.id
+                    latest_name = name_getter(sync)
+
+                next_sync_at = getattr(sync, 'next_sync_at', None)
+                if next_sync_at and (next_dt is None or next_sync_at < next_dt):
+                    next_dt = next_sync_at
+                    next_id = sync.id
+                    next_name = name_getter(sync)
+
+            part_summaries[type_key] = {
+                'type': type_key,
+                'label': label,
+                'total': len(syncs),
+                'failing': len(failing_ids),
+                'running': len(running_ids),
+                'statuses': statuses,
+                'failing_ids': failing_ids,
+                'running_ids': running_ids,
+                'latest_dt': latest_dt,
+                'latest_id': latest_id,
+                'latest_name': latest_name,
+                'next_dt': next_dt,
+                'next_id': next_id,
+                'next_name': next_name,
+            }
+
+        overall_statuses = {}
+        overall_total = 0
+        overall_failing = 0
+        overall_running = 0
+        latest_overall_part = None
+        next_overall_part = None
+
+        for part in part_summaries.values():
+            overall_total += part['total']
+            overall_failing += part['failing']
+            overall_running += part['running']
+            for status, count in part['statuses'].items():
+                overall_statuses[status] = overall_statuses.get(status, 0) + count
+
+            if part['latest_dt'] and (
+                latest_overall_part is None or part['latest_dt'] > latest_overall_part['latest_dt']
+            ):
+                latest_overall_part = part
+
+            if part['next_dt'] and (
+                next_overall_part is None or part['next_dt'] < next_overall_part['next_dt']
+            ):
+                next_overall_part = part
+
+        overall_summary = {
+            'total': overall_total,
+            'failing': overall_failing,
+            'running': overall_running,
+            'statuses': overall_statuses,
+        }
+
+        if latest_overall_part and latest_overall_part['latest_dt']:
+            overall_summary['latest_sync'] = {
+                'sync_id': latest_overall_part['latest_id'],
+                'occurred_at': serialize_datetime(latest_overall_part['latest_dt']),
+                'type': latest_overall_part['type'],
+                'type_label': latest_overall_part['label'],
+                'name': latest_overall_part['latest_name'],
+            }
+        else:
+            overall_summary['latest_sync'] = None
+
+        if next_overall_part and next_overall_part['next_dt']:
+            overall_summary['next_scheduled'] = {
+                'sync_id': next_overall_part['next_id'],
+                'scheduled_for': serialize_datetime(next_overall_part['next_dt']),
+                'type': next_overall_part['type'],
+                'type_label': next_overall_part['label'],
+                'name': next_overall_part['next_name'],
+            }
+        else:
+            overall_summary['next_scheduled'] = None
+
+        def format_part(part):
+            formatted = {
+                'type': part['type'],
+                'label': part['label'],
+                'total': part['total'],
+                'failing': part['failing'],
+                'running': part['running'],
+                'statuses': part['statuses'],
+                'failing_ids': part['failing_ids'],
+                'running_ids': part['running_ids'],
+            }
+            if part['latest_dt']:
+                formatted['latest_sync'] = {
+                    'sync_id': part['latest_id'],
+                    'occurred_at': serialize_datetime(part['latest_dt']),
+                    'type': part['type'],
+                    'type_label': part['label'],
+                    'name': part['latest_name'],
+                }
+            else:
+                formatted['latest_sync'] = None
+
+            if part['next_dt']:
+                formatted['next_scheduled'] = {
+                    'sync_id': part['next_id'],
+                    'scheduled_for': serialize_datetime(part['next_dt']),
+                    'type': part['type'],
+                    'type_label': part['label'],
+                    'name': part['next_name'],
+                }
+            else:
+                formatted['next_scheduled'] = None
+
+            return formatted
+
+        response_payload = {
+            'overall': overall_summary,
+        }
+
+        for type_key, label, _, _ in type_definitions:
+            part = part_summaries.get(type_key)
+            if part is None:
+                response_payload[type_key] = {
+                    'type': type_key,
+                    'label': label,
+                    'total': 0,
+                    'failing': 0,
+                    'running': 0,
+                    'statuses': {},
+                    'failing_ids': [],
+                    'running_ids': [],
+                    'latest_sync': None,
+                    'next_scheduled': None,
+                }
+            else:
+                response_payload[type_key] = format_part(part)
+
+        return Response(response_payload, status=status.HTTP_200_OK)
 
 class JiraSyncViewSet(viewsets.ModelViewSet):
     serializer_class = JiraSyncSerializer
