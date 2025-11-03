@@ -294,13 +294,13 @@ class ChatBotInstanceViewSet(viewsets.ModelViewSet):
 
             for sync in syncs:
                 status_value = getattr(sync, 'sync_status', None) or SyncStatusMixin.Status.IDLE
-                status = str(status_value).lower()
-                statuses[status] = statuses.get(status, 0) + 1
+                status_key = str(status_value).lower()
+                statuses[status_key] = statuses.get(status_key, 0) + 1
 
-                if status == SyncStatusMixin.Status.FAILED:
+                if status_key == SyncStatusMixin.Status.FAILED:
                     failing_ids.append(sync.id)
 
-                if status in (SyncStatusMixin.Status.QUEUED, SyncStatusMixin.Status.RUNNING):
+                if status_key in (SyncStatusMixin.Status.QUEUED, SyncStatusMixin.Status.RUNNING):
                     running_ids.append(sync.id)
 
                 last_sync_time = getattr(sync, 'last_sync_time', None)
