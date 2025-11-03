@@ -1696,7 +1696,12 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
         else:
             scored_slice.append((doc, score))
 
-    scored_slice.sort(key=lambda item: (-item[1], item[0].get("id")))
+    def _sort_reranked(item: Tuple[dict, float]) -> Tuple[float, bool, str]:
+        doc, score = item
+        doc_id = doc.get("id")
+        return (-score, doc_id is None, str(doc_id) if doc_id is not None else "")
+
+    scored_slice.sort(key=_sort_reranked)
 
     reordered = [doc for doc, _ in scored_slice] + unscored_slice + candidates[top_n:]
 
