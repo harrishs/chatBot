@@ -882,10 +882,16 @@ def _compute_retrieval_confidence(documents: Sequence[dict]) -> float:
 
     scores: List[float] = []
     for document in documents:
-        for key in ("combined_score", "similarity", "rerank_score"):
+        for key in (
+            "normalized_score",
+            "combined_score",
+            "similarity",
+            "rerank_score",
+        ):
             value = document.get(key)
             if isinstance(value, (int, float)):
                 scores.append(float(value))
+                break
 
     if not scores:
         return 0.0
