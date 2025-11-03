@@ -5,12 +5,28 @@ export const JIRA_SUBMIT_ERROR_MESSAGE =
 export const CONFLUENCE_SUBMIT_ERROR_MESSAGE =
         "Failed to create Confluence sync. Please check the configuration and try again.";
 
+function deliverFeedback(notification, notifier, alertFn) {
+        if (typeof notifier === "function") {
+                notifier(notification);
+        }
+
+        const message =
+                typeof notification === "string"
+                        ? notification
+                        : notification?.message;
+
+        if (typeof alertFn === "function" && message) {
+                alertFn(message);
+        }
+}
+
 export async function handleJiraSubmit({
         event,
         newJira,
         chatBotId,
         apiClient,
         notifier,
+        alertFn,
         resetForm,
         reload,
         logError,
@@ -22,8 +38,12 @@ export async function handleJiraSubmit({
                         type: "error",
                         message: SYNC_MISSING_CREDENTIAL_MESSAGE,
                 };
-                notifier?.(notification);
-                return { success: false, reason: "missing-credential", notification };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        reason: "missing-credential",
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 
         try {
@@ -40,8 +60,12 @@ export async function handleJiraSubmit({
                         logError(error);
                 }
                 const notification = { type: "error", message: JIRA_SUBMIT_ERROR_MESSAGE };
-                notifier?.(notification);
-                return { success: false, error, notification };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        error,
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 }
 
@@ -51,6 +75,7 @@ export async function handleConfluenceSubmit({
         chatBotId,
         apiClient,
         notifier,
+        alertFn,
         resetForm,
         reload,
         logError,
@@ -62,8 +87,12 @@ export async function handleConfluenceSubmit({
                         type: "error",
                         message: SYNC_MISSING_CREDENTIAL_MESSAGE,
                 };
-                notifier?.(notification);
-                return { success: false, reason: "missing-credential", notification };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        reason: "missing-credential",
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 
         try {
@@ -86,7 +115,11 @@ export async function handleConfluenceSubmit({
                         type: "error",
                         message: CONFLUENCE_SUBMIT_ERROR_MESSAGE,
                 };
-                notifier?.(notification);
-                return { success: false, error, notification };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        error,
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 }
