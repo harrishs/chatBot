@@ -546,6 +546,46 @@ class RerankDocumentsTests(TestCase):
         updated_key = (updated_doc.content, "text-embedding-3-large")
         self.assertEqual(call_counts[updated_key], 1, "Embedding should be recomputed after invalidation")
 
+    @override_settings(
+        OPENAI_RERANK_MODEL="",
+        OPENAI_RERANK_EMBEDDING_MODEL="",
+        OPENAI_EMBEDDING_MODEL="text-embedding-3-small",
+        RAG_RERANK_TOP_N=2,
+    )
+    @patch("chat.utils.embeddings.embed_text")
+    def test_rerank_documents_falls_back_to_primary_embedding_model(
+        self,
+        mock_embed_text,
+    ):
+        query = "release schedule"
+
+        embeddings = {
+            query: [1.0, 0.0],
+            "release schedule overview": [1.0, 0.0],
+            "implementation notes": [0.0, 1.0],
+        }
+
+        def fake_embed(text, *, model=None):
+            self.assertEqual(model, "text-embedding-3-small")
+            vector = embeddings.get(text)
+            if vector is None:
+                self.fail(f"Unexpected text embedded: {text}")
+            return list(vector)
+
+        mock_embed_text.side_effect = fake_embed
+
+        documents = [
+            {"id": None, "source_id": "CONF-1", "content": "release schedule overview"},
+            {"id": None, "source_id": "GH-1", "content": "implementation notes"},
+        ]
+
+        reranked = rerank_documents(query, documents)
+
+        self.assertEqual([doc["source_id"] for doc in reranked], ["CONF-1", "GH-1"])
+        self.assertAlmostEqual(reranked[0]["rerank_score"], 1.0)
+        self.assertAlmostEqual(reranked[1]["rerank_score"], 0.0)
+        self.assertTrue(all(doc["rerank_score"] is not None for doc in reranked))
+
 
 class DocumentChunkingMetadataTests(TestCase):
     def setUp(self):

@@ -1589,6 +1589,10 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
 
     rerank_model = getattr(settings, "OPENAI_RERANK_MODEL", "").strip()
     fallback_model = getattr(settings, "OPENAI_RERANK_EMBEDDING_MODEL", "").strip()
+    primary_embedding_model = getattr(settings, "OPENAI_EMBEDDING_MODEL", "").strip()
+
+    if not rerank_model and not fallback_model and primary_embedding_model:
+        fallback_model = primary_embedding_model
 
     top_n_setting = getattr(settings, "RAG_RERANK_TOP_N", 8)
     try:
@@ -1603,13 +1607,18 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
     alias_lookup: Dict[int, str] = {}
     alias_to_doc_key: Dict[str, str] = {}
 
-    if rerank_model and top_n > 0:
+    top_slice = candidates[:top_n]
+
+    for idx, doc in enumerate(top_slice):
+        doc_id = doc.get("id")
+        alias = str(doc_id) if doc_id is not None else f"idx-{idx}"
+        alias_lookup[id(doc)] = alias
+        alias_to_doc_key[alias] = str(doc_id) if doc_id is not None else alias
+
+    if rerank_model and top_slice:
         payload: List[dict] = []
-        for idx, doc in enumerate(candidates[:top_n]):
-            doc_id = doc.get("id")
-            alias = str(doc_id) if doc_id is not None else f"idx-{idx}"
-            alias_lookup[id(doc)] = alias
-            alias_to_doc_key[alias] = str(doc_id) if doc_id is not None else alias
+        for doc in top_slice:
+            alias = alias_lookup[id(doc)]
             payload.append(
                 {
                     "doc_id": alias,
@@ -1635,7 +1644,7 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
             )
             rerank_scores = {}
 
-    if not rerank_scores and fallback_model and top_n > 0:
+    if not rerank_scores and fallback_model and top_slice:
         try:
             query_embedding = embed_text(query, model=fallback_model)
         except Exception:  # pragma: no cover - defensive fallback
@@ -1644,14 +1653,17 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
                 fallback_model,
             )
         else:
-            for doc in candidates[:top_n]:
+            for doc in top_slice:
                 doc_id = doc.get("id")
                 alias = alias_lookup.get(id(doc)) or (str(doc_id) if doc_id is not None else None)
                 content = (doc.get("content") or "").strip()
                 if not content or alias is None:
                     continue
                 try:
-                    doc_embedding = _get_cached_rerank_embedding(doc_id, content, fallback_model)
+                    if doc_id:
+                        doc_embedding = _get_cached_rerank_embedding(doc_id, content, fallback_model)
+                    else:
+                        doc_embedding = embed_text(content, model=fallback_model)
                 except Exception:  # pragma: no cover - defensive fallback
                     logger.exception(
                         "Failed to embed document %s with high-fidelity model '%s'",
@@ -1661,7 +1673,8 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
                     continue
                 if doc_embedding is None:
                     continue
-                rerank_scores[str(doc_id)] = _cosine_similarity(query_embedding, doc_embedding)
+                key = str(doc_id) if doc_id is not None else alias
+                rerank_scores[key] = _cosine_similarity(query_embedding, doc_embedding)
 
     if not rerank_scores:
         reranked: List[dict] = []
@@ -1672,7 +1685,6 @@ def rerank_documents(query: str, documents: Sequence[dict]) -> List[dict]:
             reranked.append(updated)
         return reranked
 
-    top_slice = candidates[:top_n]
     scored_slice: List[Tuple[dict, float]] = []
     unscored_slice: List[dict] = []
     for doc in top_slice:
