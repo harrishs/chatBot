@@ -3,11 +3,27 @@ export const GIT_MISSING_CREDENTIAL_MESSAGE =
 export const GIT_SUBMIT_ERROR_MESSAGE =
         "Failed to create Git sync. Please check the configuration and try again.";
 
+function deliverFeedback(notification, notifier, alertFn) {
+        if (typeof notifier === "function") {
+                notifier(notification);
+        }
+
+        const message =
+                typeof notification === "string"
+                        ? notification
+                        : notification?.message;
+
+        if (typeof alertFn === "function" && message) {
+                alertFn(message);
+        }
+}
+
 export async function handleGitSubmit({
         event,
         newGit,
         chatBotId,
         apiClient,
+        notifier,
         alertFn,
         resetForm,
         reload,
@@ -16,8 +32,16 @@ export async function handleGitSubmit({
         event?.preventDefault?.();
 
         if (!newGit?.credential_id) {
-                alertFn?.(GIT_MISSING_CREDENTIAL_MESSAGE);
-                return { success: false, reason: "missing-credential" };
+                const notification = {
+                        type: "error",
+                        message: GIT_MISSING_CREDENTIAL_MESSAGE,
+                };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        reason: "missing-credential",
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 
         try {
@@ -36,7 +60,12 @@ export async function handleGitSubmit({
                 if (typeof logError === "function") {
                         logError(error);
                 }
-                alertFn?.(GIT_SUBMIT_ERROR_MESSAGE);
-                return { success: false, error };
+                const notification = { type: "error", message: GIT_SUBMIT_ERROR_MESSAGE };
+                deliverFeedback(notification, notifier, alertFn);
+                return {
+                        success: false,
+                        error,
+                        ...(typeof notifier === "function" ? { notification } : {}),
+                };
         }
 }
