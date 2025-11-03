@@ -31,6 +31,11 @@ from pgvector.django import CosineDistance
 
 from chat.models import ChatFeedback, Document
 
+try:  # pragma: no cover - optional dependency
+    import tiktoken
+except Exception:  # pragma: no cover - guard against unexpected import issues
+    tiktoken = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,141 @@ _MAX_CHUNK_TEXT_CHARACTERS = 1800
 
 _RETRIEVAL_FALLBACK_CACHE: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
 _MAX_FALLBACK_CACHE_SIZE = 200
+
+_EMBEDDING_MODEL_CONTEXT_LIMITS: Dict[str, int] = {
+    "text-embedding-3-small": 8192,
+    "text-embedding-3-large": 8192,
+    "text-embedding-ada-002": 8192,
+}
+
+
+def _embedding_model_context_limit(model_name: str) -> int:
+    configured_limit = getattr(settings, "OPENAI_EMBEDDING_CONTEXT_LIMIT", None)
+    if configured_limit:
+        try:
+            return max(1, int(configured_limit))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid OPENAI_EMBEDDING_CONTEXT_LIMIT value %r; falling back to defaults.",
+                configured_limit,
+            )
+
+    normalized = (model_name or "").strip().lower()
+    if normalized in _EMBEDDING_MODEL_CONTEXT_LIMITS:
+        return _EMBEDDING_MODEL_CONTEXT_LIMITS[normalized]
+
+    return 8192
+
+
+def _segment_character_limit(max_tokens: int, *, model_name: str) -> Optional[int]:
+    configured_limit = getattr(settings, "OPENAI_EMBEDDING_SEGMENT_CHAR_LIMIT", None)
+    if configured_limit is not None:
+        try:
+            limit_value = int(configured_limit)
+            return max(1, limit_value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid OPENAI_EMBEDDING_SEGMENT_CHAR_LIMIT value %r; ignoring override.",
+                configured_limit,
+            )
+
+    approx_chars_per_token = getattr(settings, "OPENAI_EMBEDDING_APPROX_CHARS_PER_TOKEN", 4)
+    try:
+        approx_chars_per_token = max(1, int(approx_chars_per_token))
+    except (TypeError, ValueError):
+        approx_chars_per_token = 4
+
+    context_limit = _embedding_model_context_limit(model_name)
+    # Heuristically bound character count based on desired max token size for each chunk.
+    per_chunk_limit = max_tokens * approx_chars_per_token
+    model_limit = context_limit * approx_chars_per_token
+    return max(1, min(per_chunk_limit, model_limit))
+
+
+def _split_text_to_max_characters(text: str, limit: Optional[int]) -> List[str]:
+    if not text:
+        return []
+    if not limit or limit <= 0 or len(text) <= limit:
+        return [text.strip()]
+
+    parts: List[str] = []
+    start = 0
+    text_length = len(text)
+    while start < text_length:
+        end = min(text_length, start + limit)
+        if end < text_length:
+            newline_break = text.rfind("\n", start, end)
+            space_break = text.rfind(" ", start, end)
+            break_point = max(newline_break, space_break)
+            if break_point <= start:
+                break_point = end
+            end = break_point
+
+        piece = text[start:end].strip()
+        if piece:
+            parts.append(piece)
+        start = max(end, start + 1)
+
+    return parts or [text[:limit].strip()]
+
+
+def _estimate_token_count(text: str, *, model_name: str) -> int:
+    if not text:
+        return 0
+
+    if tiktoken is not None:
+        try:
+            encoding = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+
+        try:
+            return len(encoding.encode(text, disallowed_special=()))
+        except Exception:  # pragma: no cover - guard against unexpected encoding issues
+            pass
+
+    # Fallback approximation assuming ~4 characters per token.
+    return max(1, (len(text) + 3) // 4)
+
+
+def _trim_text_to_token_limit(
+    text: str,
+    *,
+    max_tokens: int,
+    model_name: str,
+    fallback_char_limit: Optional[int] = None,
+) -> str:
+    trimmed = (text or "").strip()
+    if not trimmed or max_tokens <= 0:
+        return ""
+
+    if _estimate_token_count(trimmed, model_name=model_name) <= max_tokens:
+        return trimmed
+
+    low = 0
+    high = len(trimmed)
+    best = ""
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = trimmed[:mid].rstrip()
+        if not candidate:
+            high = mid - 1
+            continue
+
+        token_count = _estimate_token_count(candidate, model_name=model_name)
+        if token_count <= max_tokens:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    if best:
+        return best
+
+    if fallback_char_limit and fallback_char_limit > 0:
+        return trimmed[:fallback_char_limit].rstrip()
+
+    return ""
 
 
 def record_retrieval_fallback_event(
@@ -293,7 +433,8 @@ def _segments_with_overlap(
     *,
     max_tokens: int = 1000,
     overlap_tokens: int = 100,
-) -> List[Tuple[str, Optional[str]]]:
+    max_characters: Optional[int] = None,
+) -> List[Tuple[str, Optional[str], bool]]:
     normalized_max_tokens = max(1, int(max_tokens or 1))
     normalized_overlap = max(0, min(int(overlap_tokens or 0), normalized_max_tokens - 1))
 
@@ -301,7 +442,7 @@ def _segments_with_overlap(
     if not paragraphs:
         return []
 
-    segments: List[Tuple[str, Optional[str]]] = []
+    segments: List[Tuple[str, Optional[str], bool]] = []
     current_parts: List[str] = []
     current_tokens = 0
     current_heading: Optional[str] = None
@@ -323,10 +464,17 @@ def _segments_with_overlap(
             chunk_has_new_content = False
             return
 
-        segments.append((chunk_text, current_heading))
+        chunk_parts = _split_text_to_max_characters(chunk_text, max_characters)
+        chunk_was_truncated = len(chunk_parts) > 1 or (
+            max_characters is not None and len(chunk_text) > max_characters
+        )
 
-        if normalized_overlap and chunk_text:
-            tokens = chunk_text.split()
+        for part_text in chunk_parts:
+            if part_text:
+                segments.append((part_text, current_heading, chunk_was_truncated))
+
+        if normalized_overlap and chunk_parts:
+            tokens = chunk_parts[-1].split()
             overlap_count = min(len(tokens), normalized_overlap)
             overlap_text = " ".join(tokens[-overlap_count:]) if overlap_count else ""
             current_parts = [overlap_text] if overlap_text else []
@@ -440,21 +588,172 @@ def save_document(
     """Persist a document broken into overlapping segments with metadata-aware embeddings."""
 
     normalized_metadata = _normalize_metadata(metadata)
-    segments = _segments_with_overlap(
+    model_name = (
+        getattr(settings, "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        or "text-embedding-3-small"
+    ).strip()
+    if not model_name:
+        model_name = "text-embedding-3-small"
+
+    context_limit_tokens = _embedding_model_context_limit(model_name)
+    segment_char_limit = _segment_character_limit(max_tokens, model_name=model_name)
+
+    raw_segments = _segments_with_overlap(
         content,
         max_tokens=max_tokens,
         overlap_tokens=overlap_tokens,
+        max_characters=segment_char_limit,
     )
 
-    if not segments:
+    prepared_segments: List[Dict[str, object]] = []
+    for segment_text, section_heading, was_char_truncated in raw_segments:
+        normalized_text = (segment_text or "").strip()
+        if not normalized_text:
+            continue
+        prepared_segments.append(
+            {
+                "text": normalized_text,
+                "heading": section_heading,
+                "char_truncated": bool(was_char_truncated),
+                "truncation_reasons": ["char_limit"] if was_char_truncated else [],
+                "omit_chunk_text_in_metadata": False,
+                "suppress_all_metadata": False,
+            }
+        )
+
+    if not prepared_segments:
+        return []
+
+    changed = True
+    while changed and prepared_segments:
+        changed = False
+        idx = 0
+        while idx < len(prepared_segments):
+            segment = prepared_segments[idx]
+            segment_text = str(segment.get("text", ""))
+            if not segment_text:
+                prepared_segments.pop(idx)
+                changed = True
+                continue
+
+            chunk_metadata = dict(normalized_metadata)
+            heading_value = segment.get("heading")
+            if not heading_value:
+                heading_match = re.search(r"^#+\s*(.+)$", segment_text, re.MULTILINE)
+                if heading_match:
+                    heading_value = (heading_match.group(1) or "").strip() or None
+                    segment["heading"] = heading_value
+            if heading_value:
+                chunk_metadata["section_heading"] = heading_value
+
+            chunk_metadata["chunk_index"] = idx
+            chunk_metadata["chunk_count"] = len(prepared_segments)
+            chunk_metadata["chunk_char_count"] = len(segment_text)
+            chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
+            chunk_metadata["chunk_text"] = _bounded_chunk_text(segment_text)
+
+            metadata_full = _format_metadata_for_embedding(chunk_metadata)
+            embedding_full = segment_text
+            if metadata_full:
+                embedding_full = (
+                    f"{metadata_full}\n\n{embedding_full}"
+                    if embedding_full
+                    else metadata_full
+                )
+            tokens_full = _estimate_token_count(embedding_full, model_name=model_name)
+            if tokens_full <= context_limit_tokens:
+                idx += 1
+                continue
+
+            reduced_metadata = {
+                key: value
+                for key, value in chunk_metadata.items()
+                if key not in {"chunk_text", "chunk_char_count", "chunk_tokens"}
+            }
+            metadata_without_chunk = _format_metadata_for_embedding(reduced_metadata)
+            embedding_without_chunk = segment_text
+            if metadata_without_chunk:
+                embedding_without_chunk = (
+                    f"{metadata_without_chunk}\n\n{embedding_without_chunk}"
+                    if embedding_without_chunk
+                    else metadata_without_chunk
+                )
+            tokens_without_chunk = _estimate_token_count(
+                embedding_without_chunk,
+                model_name=model_name,
+            )
+            if tokens_without_chunk <= context_limit_tokens:
+                if not segment.get("omit_chunk_text_in_metadata"):
+                    segment["omit_chunk_text_in_metadata"] = True
+                    changed = True
+                idx += 1
+                continue
+
+            available_tokens = max(
+                context_limit_tokens
+                - _estimate_token_count(metadata_without_chunk, model_name=model_name),
+                0,
+            )
+            trimmed_text = _trim_text_to_token_limit(
+                segment_text,
+                max_tokens=available_tokens,
+                model_name=model_name,
+                fallback_char_limit=segment_char_limit,
+            )
+            if trimmed_text and trimmed_text != segment_text:
+                segment["text"] = trimmed_text
+                segment["omit_chunk_text_in_metadata"] = True
+                segment["char_truncated"] = True
+                segment.setdefault("truncation_reasons", []).append("token_limit")
+                changed = True
+                continue
+
+            trimmed_text = _trim_text_to_token_limit(
+                segment_text,
+                max_tokens=context_limit_tokens,
+                model_name=model_name,
+                fallback_char_limit=segment_char_limit,
+            )
+            if trimmed_text and trimmed_text != segment_text:
+                segment["text"] = trimmed_text
+                segment["omit_chunk_text_in_metadata"] = True
+                segment["suppress_all_metadata"] = True
+                segment["char_truncated"] = True
+                segment.setdefault("truncation_reasons", []).append("token_limit")
+                changed = True
+                continue
+
+            logger.warning(
+                "Dropping embedding chunk for source %s at temporary index %d due to size overflow.",
+                source_id,
+                idx,
+            )
+            prepared_segments.pop(idx)
+            changed = True
+            break
+
+        if idx >= len(prepared_segments):
+            continue
+
+    if not prepared_segments:
         return []
 
     docs = []
-    total_segments = len(segments)
+    truncated_chunks: List[str] = []
+    total_segments = len(prepared_segments)
 
-    for idx, (segment_text, section_heading) in enumerate(segments):
+    for idx, segment in enumerate(prepared_segments):
+        segment_text = str(segment.get("text", "")).strip()
+        if not segment_text:
+            logger.warning(
+                "Skipping embedding chunk for source %s index %d due to empty content after truncation.",
+                source_id,
+                idx,
+            )
+            continue
+
         chunk_metadata = dict(normalized_metadata)
-        heading_value = section_heading
+        heading_value = segment.get("heading")
         if not heading_value:
             heading_match = re.search(r"^#+\s*(.+)$", segment_text, re.MULTILINE)
             if heading_match:
@@ -463,16 +762,116 @@ def save_document(
             chunk_metadata["section_heading"] = heading_value
         chunk_metadata["chunk_index"] = idx
         chunk_metadata["chunk_count"] = total_segments
-
-        bounded_text = _bounded_chunk_text(segment_text)
-        chunk_metadata["chunk_text"] = bounded_text
         chunk_metadata["chunk_char_count"] = len(segment_text)
         chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
+        chunk_metadata["chunk_text"] = _bounded_chunk_text(segment_text)
 
-        metadata_text = _format_metadata_for_embedding(chunk_metadata)
-        embedding_input = segment_text.strip()
+        if segment.get("char_truncated"):
+            chunk_metadata["chunk_truncated"] = True
+            reasons = sorted(set(segment.get("truncation_reasons") or []))
+            if reasons:
+                chunk_metadata["chunk_truncated_reason"] = ",".join(reasons)
+            truncated_chunks.append(
+                f"{source_id}[{idx}] ({chunk_metadata.get('chunk_truncated_reason', 'truncated')})"
+            )
+        else:
+            chunk_metadata["chunk_truncated"] = False
+
+        metadata_mode = "full"
+        if segment.get("suppress_all_metadata"):
+            metadata_mode = "content_only"
+            metadata_for_embedding: Mapping[str, object] = {}
+        elif segment.get("omit_chunk_text_in_metadata"):
+            metadata_mode = "no_chunk_text"
+            metadata_for_embedding = {
+                key: value
+                for key, value in chunk_metadata.items()
+                if key not in {"chunk_text", "chunk_char_count", "chunk_tokens"}
+            }
+        else:
+            metadata_for_embedding = chunk_metadata
+        chunk_metadata["chunk_metadata_mode"] = metadata_mode
+
+        metadata_text = _format_metadata_for_embedding(metadata_for_embedding)
+        embedding_input = segment_text
         if metadata_text:
             embedding_input = f"{metadata_text}\n\n{embedding_input}" if embedding_input else metadata_text
+
+        total_tokens = _estimate_token_count(embedding_input, model_name=model_name)
+        if total_tokens > context_limit_tokens:
+            available_tokens = max(
+                context_limit_tokens
+                - _estimate_token_count(metadata_text, model_name=model_name),
+                0,
+            )
+            trimmed_text = _trim_text_to_token_limit(
+                segment_text,
+                max_tokens=available_tokens or context_limit_tokens,
+                model_name=model_name,
+                fallback_char_limit=segment_char_limit,
+            )
+            if trimmed_text and trimmed_text != segment_text:
+                segment_text = trimmed_text
+                chunk_metadata["chunk_char_count"] = len(segment_text)
+                chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
+                chunk_metadata["chunk_text"] = _bounded_chunk_text(segment_text)
+                chunk_metadata["chunk_truncated"] = True
+                reasons = set(segment.get("truncation_reasons") or [])
+                reasons.add("token_limit")
+                chunk_metadata["chunk_truncated_reason"] = ",".join(sorted(reasons))
+                truncated_chunks.append(
+                    f"{source_id}[{idx}] ({chunk_metadata.get('chunk_truncated_reason', 'truncated')})"
+                )
+                embedding_input = segment_text
+                if metadata_text and metadata_mode != "content_only":
+                    embedding_input = (
+                        f"{metadata_text}\n\n{embedding_input}"
+                        if embedding_input
+                        else metadata_text
+                    )
+                total_tokens = _estimate_token_count(
+                    embedding_input,
+                    model_name=model_name,
+                )
+
+        if total_tokens > context_limit_tokens:
+            metadata_text = ""
+            embedding_input = segment_text
+            total_tokens = _estimate_token_count(embedding_input, model_name=model_name)
+            if total_tokens > context_limit_tokens:
+                trimmed_text = _trim_text_to_token_limit(
+                    segment_text,
+                    max_tokens=context_limit_tokens,
+                    model_name=model_name,
+                    fallback_char_limit=segment_char_limit,
+                )
+                if not trimmed_text:
+                    logger.warning(
+                        "Skipping embedding chunk for source %s index %d because it exceeds context limits even after trimming.",
+                        source_id,
+                        idx,
+                    )
+                    continue
+                segment_text = trimmed_text
+                chunk_metadata["chunk_char_count"] = len(segment_text)
+                chunk_metadata["chunk_tokens"] = len(re.findall(r"\S+", segment_text))
+                chunk_metadata["chunk_text"] = _bounded_chunk_text(segment_text)
+                chunk_metadata["chunk_truncated"] = True
+                reasons = set(segment.get("truncation_reasons") or [])
+                reasons.add("token_limit")
+                chunk_metadata["chunk_truncated_reason"] = ",".join(sorted(reasons))
+                truncated_chunks.append(
+                    f"{source_id}[{idx}] ({chunk_metadata.get('chunk_truncated_reason', 'truncated')})"
+                )
+                embedding_input = segment_text
+
+        if not embedding_input:
+            logger.warning(
+                "Skipping embedding chunk for source %s index %d due to empty embedding input.",
+                source_id,
+                idx,
+            )
+            continue
 
         embedding = embed_text(embedding_input)
         chunk_id = f"{source_id}_part_{idx}" if total_segments > 1 else source_id
@@ -490,6 +889,13 @@ def save_document(
             },
         )
         docs.append(doc)
+
+    if truncated_chunks:
+        logger.info(
+            "Embedding chunks truncated for source %s: %s",
+            source_id,
+            "; ".join(truncated_chunks),
+        )
 
     return docs
 
