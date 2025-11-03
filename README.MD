@@ -99,3 +99,12 @@ re-ingest issues with the richer content.
 
 No additional cleanup is required; rerunning the sync updates both the stored
 issues and their embeddings.
+
+### Rerank fallback behaviour
+
+If `OPENAI_RERANK_MODEL` and `OPENAI_RERANK_EMBEDDING_MODEL` are both left
+blank, the backend now falls back to the primary embedding model defined by
+`OPENAI_EMBEDDING_MODEL` when re-ranking search results. This ensures the query
+and the configured top-N documents are embedded and receive deterministic
+`rerank_score` values even without a specialised cross-encoder or high-fidelity
+rerank embedding model.
