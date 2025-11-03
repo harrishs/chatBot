@@ -12,7 +12,7 @@ os.environ.setdefault("DJANGO_SECRET_KEY", "unit-test-secret")
 
 django.setup()
 
-from django.test import TestCase, override_settings  # noqa: E402
+from django.test import SimpleTestCase, TestCase, override_settings  # noqa: E402
 
 from chat.models import ChatBotInstance, Company, Document  # noqa: E402
 from chat.utils import rag  # noqa: E402
@@ -641,3 +641,31 @@ class DocumentChunkingMetadataTests(TestCase):
             any("Second sentence provides additional detail." in body for body in bodies[1:]),
             "Overlapping segment should retain context from prior chunk",
         )
+
+
+class RetrievalConfidenceScoringTests(SimpleTestCase):
+    def test_retrieval_confidence_prefers_normalized_scores(self):
+        high_normalized = [
+            {"normalized_score": 0.9, "combined_score": 0.2},
+            {"normalized_score": 0.8, "combined_score": 0.1},
+        ]
+        mixed_scores = [
+            {"normalized_score": 0.4, "combined_score": 0.95},
+            {"combined_score": 0.3},
+        ]
+
+        high_confidence = rag._compute_retrieval_confidence(high_normalized)
+        mixed_confidence = rag._compute_retrieval_confidence(mixed_scores)
+
+        self.assertGreater(high_confidence, mixed_confidence)
+
+    def test_retrieval_confidence_falls_back_when_normalized_missing(self):
+        documents = [
+            {"combined_score": 0.8},
+            {"similarity": 0.6},
+        ]
+
+        confidence = rag._compute_retrieval_confidence(documents)
+
+        expected = (0.7 * 0.8) + (0.3 * 0.6)
+        self.assertAlmostEqual(confidence, expected)
