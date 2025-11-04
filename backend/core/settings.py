@@ -27,6 +27,9 @@ OPENAI_API_KEY = config('OPENAI_API_KEY', default=None)
 if not OPENAI_API_KEY:
     raise ImproperlyConfigured('OPENAI_API_KEY is required')
 
+OPENAI_COMPLETION_MODEL = config(
+    'OPENAI_COMPLETION_MODEL', default='gpt-4o-mini'
+).strip() or 'gpt-4o-mini'
 OPENAI_EMBEDDING_MODEL = config('OPENAI_EMBEDDING_MODEL', default='text-embedding-3-small')
 OPENAI_RERANK_EMBEDDING_MODEL = config(
     'OPENAI_RERANK_EMBEDDING_MODEL', default='text-embedding-3-large'

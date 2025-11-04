@@ -1623,8 +1623,14 @@ def generate_answer(
 
     client = get_openai_client()
 
+    completion_model = getattr(settings, "OPENAI_COMPLETION_MODEL", "gpt-4o-mini")
+    if isinstance(completion_model, str):
+        completion_model = completion_model.strip() or "gpt-4o-mini"
+    else:
+        completion_model = "gpt-4o-mini"
+
     completion_kwargs = {
-        "model": "gpt-4o-mini",
+        "model": completion_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
