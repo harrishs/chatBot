@@ -35,6 +35,14 @@ These variables drive the configuration for:
 * Backend host, CSRF, and CORS allow-lists for Django.
 * Caddy virtual hosts via environment placeholders in `deploy/Caddyfile`.
 
+### OpenAI completion model selection
+
+The backend defaults to the lightweight `gpt-4o-mini` model for chat
+completions so responses remain fast and affordable. Operators who need more
+capable models can set the optional `OPENAI_COMPLETION_MODEL` environment
+variable (for example, `gpt-4o`). The value is read at runtime, so deployments
+can scale up or down without code changes.
+
 > **Important:** Ensure your proxy forwards the `X-Forwarded-Proto` header with
 > the value `https` for secure requests. Caddy does this by default and Django's
 > `SECURE_PROXY_SSL_HEADER` setting is configured to trust it so generated

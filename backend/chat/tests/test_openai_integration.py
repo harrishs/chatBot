@@ -146,6 +146,48 @@ class GenerateAnswerTests(SimpleTestCase):
 
     @override_settings(
         OPENAI_API_KEY="test-key",
+        OPENAI_COMPLETION_MODEL=" gpt-4o ",
+    )
+    def test_generate_answer_uses_custom_completion_model(self):
+        mock_client = Mock()
+        mock_choice = SimpleNamespace(
+            message=SimpleNamespace(content="final answer referencing [jira:PROJ-1]")
+        )
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        mock_client.chat.completions.create.return_value = mock_response
+
+        documents = [
+            {
+                "source": "jira",
+                "source_id": "PROJ-1",
+                "source_display": "PROJ-1",
+                "source_url": "https://example.atlassian.net/browse/PROJ-1",
+                "content": "Issue title\nA concise update about the fix.",
+                "metadata": {
+                    "title": "Issue title",
+                    "chunk_text": "Issue title\nA concise update about the fix.",
+                    "chunk_index": 0,
+                    "chunk_count": 1,
+                    "source_url": "https://example.atlassian.net/browse/PROJ-1",
+                },
+                "similarity": 0.91,
+                "combined_score": 0.91,
+            }
+        ]
+
+        with patch("chat.utils.rag.get_openai_client", return_value=mock_client), patch(
+            "chat.utils.rag.search_documents", return_value=documents
+        ), patch(
+            "chat.utils.rag.rerank_documents", return_value=documents
+        ):
+            rag._QUERY_REWRITE_CACHE.clear()
+            rag.generate_answer(company_id=1, chatbot_id=2, query="question")
+
+        completion_args = mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(completion_args["model"], "gpt-4o")
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
         RAG_QUERY_REWRITE_MODEL="gpt-4o-mini",
         RAG_QUERY_REWRITE_THRESHOLD=0.6,
         RAG_LOW_CONFIDENCE_THRESHOLD=0.8,
@@ -179,11 +221,13 @@ class GenerateAnswerTests(SimpleTestCase):
                 "source_display": "LOW-1",
                 "content": "Unrelated status",
                 "metadata": {"title": "Unhelpful", "chunk_text": "Unrelated status"},
-                "combined_score": 0.05,
+                "combined_score": 0.0,
                 "similarity": 0.05,
-                "normalized_score": 1.0,
+                "normalized_score": 0.0,
             }
         ]
+
+        self.assertEqual(initial_documents[0]["normalized_score"], 0.0)
 
         rewrite_documents = [
             {
@@ -228,6 +272,7 @@ class GenerateAnswerTests(SimpleTestCase):
         ), patch(
             "chat.utils.rag.record_retrieval_fallback_event"
         ) as mock_record_event:
+            rag._QUERY_REWRITE_CACHE.clear()
             result = rag.generate_answer(company_id=1, chatbot_id=2, query="question")
 
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
